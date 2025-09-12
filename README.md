@@ -45,8 +45,8 @@ c.MCPExtensionApp.mcp_tools = [
     "jupyter_ai_tools.toolkits.notebook:edit_cell",
     
     # JupyterLab Commands Toolkit
-    "jupyterlab_commands_toolkit.tools:clear_all_outputs_in_notebook",
-    "jupyterlab_commands_toolkit.tools:open_document",
+    "jupyterlab_commands_toolkit.tools:list_all_commands",
+    "jupyterlab_commands_toolkit.tools:execute_command",
 ]
 ```
 
