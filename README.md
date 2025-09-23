@@ -2,6 +2,8 @@
 
 A configurable MCP (Model Context Protocol) server extension for Jupyter Server that allows dynamic registration of Python functions as tools accessible to MCP clients from a running Jupyter Server.
 
+https://github.com/user-attachments/assets/aa779b1c-a443-48d7-b3eb-13f27a4333b3
+
 ## Overview
 
 This extension provides a simplified, trait-based approach to exposing Jupyter functionality through the MCP protocol. It can dynamically load and register tools from various Python packages, making them available to AI assistants and other MCP clients.
