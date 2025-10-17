@@ -3,10 +3,11 @@
 import asyncio
 import contextlib
 import importlib
+import importlib.metadata
 import logging
 
 from jupyter_server.extension.application import ExtensionApp
-from traitlets import Int, List, Unicode
+from traitlets import Bool, Int, List, Unicode
 
 from .mcp_server import MCPServer
 
@@ -35,6 +36,14 @@ class MCPExtensionApp(ExtensionApp):
             "List of tools to register with the MCP server. "
             "Format: 'module_path:function_name' "
             "(e.g., 'os:getcwd', 'math:sqrt')"
+        ),
+    ).tag(config=True)
+
+    use_tool_discovery = Bool(
+        default_value=True,
+        help=(
+            "Whether to automatically discover and register tools from "
+            "Python entrypoints in the 'jupyter_ai.tools' group"
         ),
     ).tag(config=True)
 
@@ -75,21 +84,93 @@ class MCPExtensionApp(ExtensionApp):
             msg = f"Function '{function_name}' not found in module '{module_path}': {e}"
             raise AttributeError(msg) from e
 
-    def _register_configured_tools(self):
-        """Register tools specified in the mcp_tools configuration."""
-        if not self.mcp_tools:
+    def _register_tools(self, tool_specs: list[str], source: str = "configuration"):
+        """Register tools from a list of tool specifications.
+
+        Args:
+            tool_specs: List of tool specifications in 'module:function' format
+            source: Description of where tools came from (for logging)
+        """
+        if not tool_specs:
             return
 
-        logger.info(f"Registering {len(self.mcp_tools)} configured tools")
+        logger.info(f"Registering {len(tool_specs)} tools from {source}")
 
-        for tool_spec in self.mcp_tools:
+        for tool_spec in tool_specs:
             try:
                 function = self._load_function_from_string(tool_spec)
                 self.mcp_server_instance.register_tool(function)
-                logger.info(f"✅ Registered tool: {tool_spec}")
+                logger.info(f"✅ Registered tool from {source}: {tool_spec}")
             except Exception as e:
-                logger.error(f"❌ Failed to register tool '{tool_spec}': {e}")
+                logger.error(f"❌ Failed to register tool '{tool_spec}' from {source}: {e}")
                 continue
+
+    def _discover_entrypoint_tools(self) -> list[str]:
+        """Discover tools from Python entrypoints in the 'jupyter_ai.tools' group.
+
+        Returns:
+            List of tool specifications in 'module:function' format
+        """
+        if not self.use_tool_discovery:
+            return []
+
+        discovered_tools = []
+
+        try:
+            # Use importlib.metadata to discover entrypoints
+            entrypoints = importlib.metadata.entry_points()
+
+            # Handle both Python 3.10+ and 3.9 style entrypoint APIs
+            if hasattr(entrypoints, "select"):
+                tools_group = entrypoints.select(group="jupyter_ai.tools")
+            else:
+                tools_group = entrypoints.get("jupyter_ai.tools", [])
+
+            for entry_point in tools_group:
+                try:
+                    # Load the entrypoint value (can be a list or a function that returns a list)
+                    loaded_value = entry_point.load()
+
+                    # Get tool specs from either a list or callable
+                    if isinstance(loaded_value, list):
+                        tool_specs = loaded_value
+                    elif callable(loaded_value):
+                        tool_specs = loaded_value()
+                        if not isinstance(tool_specs, list):
+                            logger.warning(
+                                f"Entrypoint '{entry_point.name}' function returned "
+                                f"{type(tool_specs).__name__} instead of list, skipping"
+                            )
+                            continue
+                    else:
+                        logger.warning(
+                            f"Entrypoint '{entry_point.name}' is neither a list nor callable, skipping"
+                        )
+                        continue
+
+                    # Validate and collect tool specs
+                    valid_specs = [spec for spec in tool_specs if isinstance(spec, str)]
+                    invalid_count = len(tool_specs) - len(valid_specs)
+
+                    if invalid_count > 0:
+                        logger.warning(
+                            f"Skipped {invalid_count} non-string tool specs from '{entry_point.name}'"
+                        )
+
+                    discovered_tools.extend(valid_specs)
+                    logger.info(f"Discovered {len(valid_specs)} tools from entrypoint '{entry_point.name}'")
+
+                except Exception as e:
+                    logger.error(f"Failed to load entrypoint '{entry_point.name}': {e}")
+                    continue
+
+        except Exception as e:
+            logger.error(f"Failed to discover entrypoints: {e}")
+
+        if not discovered_tools:
+            logger.info("No tools discovered from entrypoints")
+
+        return discovered_tools
 
     def initialize(self):
         """Initialize the extension."""
@@ -115,8 +196,10 @@ class MCPExtensionApp(ExtensionApp):
                 parent=self, name=self.mcp_name, port=self.mcp_port
             )
 
-            # Register configured tools
-            self._register_configured_tools()
+            # Register tools from entrypoints, then from configuration
+            entrypoint_tools = self._discover_entrypoint_tools()
+            self._register_tools(entrypoint_tools, source="entrypoints")
+            self._register_tools(self.mcp_tools, source="configuration")
 
             # Start the MCP server in a background task
             self.mcp_server_task = asyncio.create_task(
@@ -126,12 +209,9 @@ class MCPExtensionApp(ExtensionApp):
             # Give the server a moment to start
             await asyncio.sleep(0.5)
 
+            registered_count = len(self.mcp_server_instance._registered_tools)
             self.log.info(f"✅ MCP server started on port {self.mcp_port}")
-            if self.mcp_tools:
-                registered_count = len(self.mcp_server_instance._registered_tools)
-                self.log.info(f"Registered {registered_count} tools from configuration")
-            else:
-                self.log.info("Use mcp_server_instance.register_tool() to add tools")
+            self.log.info(f"Total registered tools: {registered_count}")
 
         except Exception as e:
             self.log.error(f"Failed to start MCP server: {e}")
