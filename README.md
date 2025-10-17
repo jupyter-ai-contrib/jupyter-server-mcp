@@ -11,7 +11,8 @@ This extension provides a simplified, trait-based approach to exposing Jupyter f
 ## Key Features
 
 - **Simplified Architecture**: Direct function registration without complex abstractions
-- **Configurable Tool Loading**: Register tools via string specifications (`module:function`)  
+- **Configurable Tool Loading**: Register tools via string specifications (`module:function`)
+- **Automatic Tool Discovery**: Python packages can expose tools via entrypoints
 - **Jupyter Integration**: Seamless integration with Jupyter Server extension system
 - **HTTP Transport**: FastMCP-based HTTP server with proper MCP protocol support
 - **Traitlets Configuration**: Full configuration support through Jupyter's traitlets system
@@ -131,21 +132,58 @@ Jupyter Server extension that manages the MCP server lifecycle:
 
 **Configuration Traits:**
 - `mcp_name` - Server name (default: "Jupyter MCP Server")
-- `mcp_port` - Server port (default: 3001)  
+- `mcp_port` - Server port (default: 3001)
 - `mcp_tools` - List of tools to register (format: "module:function")
+- `use_tool_discovery` - Enable automatic tool discovery via entrypoints (default: True)
 
-### Tool Loading System
+### Tool Registration
 
-Tools are loaded using string specifications in the format `module_path:function_name`:
+Tools can be registered in two ways:
+
+#### 1. Manual Configuration
+
+Specify tools directly in your Jupyter configuration using `module:function` format:
 
 ```python
-# Examples
-"os:getcwd"                                           # Standard library
-"jupyter_ai_tools.toolkits.notebook:read_notebook"   # External package
-"math:sqrt"                                           # Built-in modules
+c.MCPExtensionApp.mcp_tools = [
+    "os:getcwd",
+    "jupyter_ai_tools.toolkits.notebook:read_notebook",
+]
 ```
 
-The extension dynamically imports the module and registers the function with FastMCP.
+#### 2. Automatic Discovery via Entrypoints
+
+Python packages can expose tools automatically using the `jupyter_ai.tools` entrypoint group.
+
+**In your package's `pyproject.toml`:**
+
+```toml
+[project.entry-points."jupyter_ai.tools"]
+my_package_tools = "my_package.tools:TOOLS"
+```
+
+**In `my_package/tools.py`:**
+
+```python
+# Option 1: Define as a list
+TOOLS = [
+    "my_package.operations:create_file",
+    "my_package.operations:delete_file",
+]
+
+# Option 2: Define as a function
+def get_tools():
+    return [
+        "my_package.operations:create_file",
+        "my_package.operations:delete_file",
+    ]
+```
+
+Tools from entrypoints are discovered automatically when the extension starts. To disable automatic discovery:
+
+```python
+c.MCPExtensionApp.use_tool_discovery = False
+```
 
 ## Configuration Examples
 

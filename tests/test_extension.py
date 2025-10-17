@@ -340,3 +340,94 @@ class TestExtensionWithTools:
 
             # Should not register any tools
             mock_server.register_tool.assert_not_called()
+
+
+class TestEntrypointDiscovery:
+    """Test entrypoint discovery functionality."""
+
+    def test_discover_entrypoint_tools_multiple_types(self):
+        """Test discovering tools from both list and function entrypoints."""
+        extension = MCPExtensionApp()
+
+        # Create mock entrypoints - one list, one function
+        mock_ep1 = Mock()
+        mock_ep1.name = "package1_tools"
+        mock_ep1.value = "package1.tools:TOOLS"
+        mock_ep1.load.return_value = ["os:getcwd", "math:sqrt"]
+
+        mock_ep2 = Mock()
+        mock_ep2.name = "package2_tools"
+        mock_ep2.value = "package2.tools:get_tools"
+        mock_function = Mock(return_value=["json:dumps", "time:time"])
+        mock_ep2.load.return_value = mock_function
+
+        with patch("importlib.metadata.entry_points") as mock_ep_func:
+            mock_ep_func.return_value.select = Mock(return_value=[mock_ep1, mock_ep2])
+
+            tools = extension._discover_entrypoint_tools()
+            assert len(tools) == 4
+            assert set(tools) == {"os:getcwd", "math:sqrt", "json:dumps", "time:time"}
+            mock_function.assert_called_once()  # Function was called
+
+    def test_discover_entrypoint_tools_error_handling(self):
+        """Test that discovery handles invalid entrypoints gracefully."""
+        extension = MCPExtensionApp()
+
+        # Mix of valid and invalid entrypoints
+        valid_ep = Mock()
+        valid_ep.name = "valid"
+        valid_ep.load.return_value = ["os:getcwd"]
+
+        invalid_type_ep = Mock()
+        invalid_type_ep.name = "invalid_type"
+        invalid_type_ep.load.return_value = "not_a_list"
+
+        function_bad_return_ep = Mock()
+        function_bad_return_ep.name = "bad_function"
+        function_bad_return_ep.load.return_value = Mock(return_value={"not": "list"})
+
+        load_error_ep = Mock()
+        load_error_ep.name = "load_error"
+        load_error_ep.load.side_effect = ImportError("Module not found")
+
+        with patch("importlib.metadata.entry_points") as mock_ep_func:
+            mock_ep_func.return_value.select = Mock(
+                return_value=[valid_ep, invalid_type_ep, function_bad_return_ep, load_error_ep]
+            )
+
+            with patch("jupyter_server_mcp.extension.logger"):
+                tools = extension._discover_entrypoint_tools()
+                # Should only get the valid one
+                assert tools == ["os:getcwd"]
+
+    def test_discover_entrypoint_tools_disabled(self):
+        """Test that discovery returns empty list when disabled."""
+        extension = MCPExtensionApp()
+        extension.use_tool_discovery = False
+
+        # Should return empty without trying to discover
+        tools = extension._discover_entrypoint_tools()
+        assert tools == []
+
+    @pytest.mark.asyncio
+    async def test_start_extension_with_entrypoints_and_config(self):
+        """Test extension startup with both entrypoint and configured tools."""
+        extension = MCPExtensionApp()
+        extension.mcp_port = 3086
+        extension.use_tool_discovery = True
+        extension.mcp_tools = ["json:dumps"]
+
+        discovered_tools = ["os:getcwd"]
+
+        with patch("jupyter_server_mcp.extension.MCPServer") as mock_mcp_class:
+            mock_server = Mock()
+            mock_server.start_server = AsyncMock()
+            mock_server._registered_tools = {"getcwd": {}, "dumps": {}}
+            mock_mcp_class.return_value = mock_server
+
+            with patch.object(extension, "_discover_entrypoint_tools", return_value=discovered_tools):
+                await extension.start_extension()
+
+                # Should register both entrypoint (1) and configured (1) tools = 2 total
+                assert mock_server.register_tool.call_count == 2
+
