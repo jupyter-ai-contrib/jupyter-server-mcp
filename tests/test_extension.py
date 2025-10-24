@@ -62,6 +62,7 @@ class TestMCPExtensionLifecycle:
         with patch("jupyter_server_mcp.extension.MCPServer") as mock_mcp_class:
             mock_server = Mock()
             mock_server.start_server = AsyncMock()
+            mock_server._registered_tools = []  # Use list instead of Mock
             mock_mcp_class.return_value = mock_server
 
             await extension.start_extension()
@@ -152,6 +153,7 @@ class TestMCPExtensionLifecycle:
         with patch("jupyter_server_mcp.extension.MCPServer") as mock_mcp_class:
             mock_server = Mock()
             mock_server.start_server = AsyncMock()
+            mock_server._registered_tools = []  # Use list instead of Mock
             mock_mcp_class.return_value = mock_server
 
             # Start extension
@@ -253,7 +255,7 @@ class TestToolLoading:
         extension.mcp_tools = []
 
         # Should not call register_tool
-        extension._register_configured_tools()
+        extension._register_tools(extension.mcp_tools, source="configuration")
         extension.mcp_server_instance.register_tool.assert_not_called()
 
     def test_register_configured_tools_valid(self):
@@ -264,15 +266,15 @@ class TestToolLoading:
 
         # Capture log output
         with patch("jupyter_server_mcp.extension.logger") as mock_logger:
-            extension._register_configured_tools()
+            extension._register_tools(extension.mcp_tools, source="configuration")
 
             # Should register both tools
             assert extension.mcp_server_instance.register_tool.call_count == 2
 
             # Check log messages
-            mock_logger.info.assert_any_call("Registering 2 configured tools")
-            mock_logger.info.assert_any_call("✅ Registered tool: os:getcwd")
-            mock_logger.info.assert_any_call("✅ Registered tool: math:sqrt")
+            mock_logger.info.assert_any_call("Registering 2 tools from configuration")
+            mock_logger.info.assert_any_call("✅ Registered tool from configuration: os:getcwd")
+            mock_logger.info.assert_any_call("✅ Registered tool from configuration: math:sqrt")
 
     def test_register_configured_tools_with_errors(self):
         """Test registering tools when some fail to load."""
@@ -281,14 +283,14 @@ class TestToolLoading:
         extension.mcp_tools = ["os:getcwd", "invalid:function", "math:sqrt"]
 
         with patch("jupyter_server_mcp.extension.logger") as mock_logger:
-            extension._register_configured_tools()
+            extension._register_tools(extension.mcp_tools, source="configuration")
 
             # Should register 2 valid tools (os:getcwd and math:sqrt)
             assert extension.mcp_server_instance.register_tool.call_count == 2
 
             # Check error logging
             mock_logger.error.assert_any_call(
-                "❌ Failed to register tool 'invalid:function': "
+                "❌ Failed to register tool 'invalid:function' from configuration: "
                 "Could not import module 'invalid': No module named 'invalid'"
             )
 
