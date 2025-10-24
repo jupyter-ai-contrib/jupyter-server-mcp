@@ -273,8 +273,12 @@ class TestToolLoading:
 
             # Check log messages
             mock_logger.info.assert_any_call("Registering 2 tools from configuration")
-            mock_logger.info.assert_any_call("✅ Registered tool from configuration: os:getcwd")
-            mock_logger.info.assert_any_call("✅ Registered tool from configuration: math:sqrt")
+            mock_logger.info.assert_any_call(
+                "✅ Registered tool from configuration: os:getcwd"
+            )
+            mock_logger.info.assert_any_call(
+                "✅ Registered tool from configuration: math:sqrt"
+            )
 
     def test_register_configured_tools_with_errors(self):
         """Test registering tools when some fail to load."""
