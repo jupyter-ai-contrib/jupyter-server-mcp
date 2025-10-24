@@ -392,7 +392,12 @@ class TestEntrypointDiscovery:
 
         with patch("importlib.metadata.entry_points") as mock_ep_func:
             mock_ep_func.return_value.select = Mock(
-                return_value=[valid_ep, invalid_type_ep, function_bad_return_ep, load_error_ep]
+                return_value=[
+                    valid_ep,
+                    invalid_type_ep,
+                    function_bad_return_ep,
+                    load_error_ep,
+                ]
             )
 
             with patch("jupyter_server_mcp.extension.logger"):
@@ -425,9 +430,10 @@ class TestEntrypointDiscovery:
             mock_server._registered_tools = {"getcwd": {}, "dumps": {}}
             mock_mcp_class.return_value = mock_server
 
-            with patch.object(extension, "_discover_entrypoint_tools", return_value=discovered_tools):
+            with patch.object(
+                extension, "_discover_entrypoint_tools", return_value=discovered_tools
+            ):
                 await extension.start_extension()
 
                 # Should register both entrypoint (1) and configured (1) tools = 2 total
                 assert mock_server.register_tool.call_count == 2
-

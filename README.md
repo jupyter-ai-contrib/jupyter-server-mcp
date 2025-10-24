@@ -153,12 +153,12 @@ c.MCPExtensionApp.mcp_tools = [
 
 #### 2. Automatic Discovery via Entrypoints
 
-Python packages can expose tools automatically using the `jupyter_ai.tools` entrypoint group.
+Python packages can expose tools automatically using the `jupyter_server_mcp.tools` entrypoint group.
 
 **In your package's `pyproject.toml`:**
 
 ```toml
-[project.entry-points."jupyter_ai.tools"]
+[project.entry-points."jupyter_server_mcp.tools"]
 my_package_tools = "my_package.tools:TOOLS"
 ```
 

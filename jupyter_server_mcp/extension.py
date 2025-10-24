@@ -43,7 +43,7 @@ class MCPExtensionApp(ExtensionApp):
         default_value=True,
         help=(
             "Whether to automatically discover and register tools from "
-            "Python entrypoints in the 'jupyter_ai.tools' group"
+            "Python entrypoints in the 'jupyter_server_mcp.tools' group"
         ),
     ).tag(config=True)
 
@@ -102,11 +102,13 @@ class MCPExtensionApp(ExtensionApp):
                 self.mcp_server_instance.register_tool(function)
                 logger.info(f"✅ Registered tool from {source}: {tool_spec}")
             except Exception as e:
-                logger.error(f"❌ Failed to register tool '{tool_spec}' from {source}: {e}")
+                logger.error(
+                    f"❌ Failed to register tool '{tool_spec}' from {source}: {e}"
+                )
                 continue
 
     def _discover_entrypoint_tools(self) -> list[str]:
-        """Discover tools from Python entrypoints in the 'jupyter_ai.tools' group.
+        """Discover tools from Python entrypoints in the 'jupyter_server_mcp.tools' group.
 
         Returns:
             List of tool specifications in 'module:function' format
@@ -122,9 +124,9 @@ class MCPExtensionApp(ExtensionApp):
 
             # Handle both Python 3.10+ and 3.9 style entrypoint APIs
             if hasattr(entrypoints, "select"):
-                tools_group = entrypoints.select(group="jupyter_ai.tools")
+                tools_group = entrypoints.select(group="jupyter_server_mcp.tools")
             else:
-                tools_group = entrypoints.get("jupyter_ai.tools", [])
+                tools_group = entrypoints.get("jupyter_server_mcp.tools", [])
 
             for entry_point in tools_group:
                 try:
@@ -158,7 +160,9 @@ class MCPExtensionApp(ExtensionApp):
                         )
 
                     discovered_tools.extend(valid_specs)
-                    logger.info(f"Discovered {len(valid_specs)} tools from entrypoint '{entry_point.name}'")
+                    logger.info(
+                        f"Discovered {len(valid_specs)} tools from entrypoint '{entry_point.name}'"
+                    )
 
                 except Exception as e:
                     logger.error(f"Failed to load entrypoint '{entry_point.name}': {e}")
