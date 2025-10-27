@@ -39,11 +39,22 @@ class MCPExtensionApp(ExtensionApp):
         ),
     ).tag(config=True)
 
+    mcp_prompts = List(
+        trait=Unicode(),
+        default_value=[],
+        help=(
+            "List of prompts to register with the MCP server. "
+            "Format: 'module_path:function_name' "
+            "(e.g., 'mypackage.prompts:code_review_prompt')"
+        ),
+    ).tag(config=True)
+
     use_tool_discovery = Bool(
         default_value=True,
         help=(
-            "Whether to automatically discover and register tools from "
-            "Python entrypoints in the 'jupyter_server_mcp.tools' group"
+            "Whether to automatically discover and register tools and prompts from "
+            "Python entrypoints in the 'jupyter_server_mcp.tools' and "
+            "'jupyter_server_mcp.prompts' groups"
         ),
     ).tag(config=True)
 
@@ -104,6 +115,29 @@ class MCPExtensionApp(ExtensionApp):
             except Exception as e:
                 logger.error(
                     f"❌ Failed to register tool '{tool_spec}' from {source}: {e}"
+                )
+                continue
+
+    def _register_prompts(self, prompt_specs: list[str], source: str = "configuration"):
+        """Register prompts from a list of prompt specifications.
+
+        Args:
+            prompt_specs: List of prompt specifications in 'module:function' format
+            source: Description of where prompts came from (for logging)
+        """
+        if not prompt_specs:
+            return
+
+        logger.info(f"Registering {len(prompt_specs)} prompts from {source}")
+
+        for prompt_spec in prompt_specs:
+            try:
+                function = self._load_function_from_string(prompt_spec)
+                self.mcp_server_instance.register_prompt(function)
+                logger.info(f"✅ Registered prompt from {source}: {prompt_spec}")
+            except Exception as e:
+                logger.error(
+                    f"❌ Failed to register prompt '{prompt_spec}' from {source}: {e}"
                 )
                 continue
 
@@ -176,6 +210,75 @@ class MCPExtensionApp(ExtensionApp):
 
         return discovered_tools
 
+    def _discover_entrypoint_prompts(self) -> list[str]:
+        """Discover prompts from Python entrypoints in the 'jupyter_server_mcp.prompts' group.
+
+        Returns:
+            List of prompt specifications in 'module:function' format
+        """
+        if not self.use_tool_discovery:
+            return []
+
+        discovered_prompts = []
+
+        try:
+            # Use importlib.metadata to discover entrypoints
+            entrypoints = importlib.metadata.entry_points()
+
+            # Handle both Python 3.10+ and 3.9 style entrypoint APIs
+            if hasattr(entrypoints, "select"):
+                prompts_group = entrypoints.select(group="jupyter_server_mcp.prompts")
+            else:
+                prompts_group = entrypoints.get("jupyter_server_mcp.prompts", [])
+
+            for entry_point in prompts_group:
+                try:
+                    # Load the entrypoint value (can be a list or a function that returns a list)
+                    loaded_value = entry_point.load()
+
+                    # Get prompt specs from either a list or callable
+                    if isinstance(loaded_value, list):
+                        prompt_specs = loaded_value
+                    elif callable(loaded_value):
+                        prompt_specs = loaded_value()
+                        if not isinstance(prompt_specs, list):
+                            logger.warning(
+                                f"Entrypoint '{entry_point.name}' function returned "
+                                f"{type(prompt_specs).__name__} instead of list, skipping"
+                            )
+                            continue
+                    else:
+                        logger.warning(
+                            f"Entrypoint '{entry_point.name}' is neither a list nor callable, skipping"
+                        )
+                        continue
+
+                    # Validate and collect prompt specs
+                    valid_specs = [spec for spec in prompt_specs if isinstance(spec, str)]
+                    invalid_count = len(prompt_specs) - len(valid_specs)
+
+                    if invalid_count > 0:
+                        logger.warning(
+                            f"Skipped {invalid_count} non-string prompt specs from '{entry_point.name}'"
+                        )
+
+                    discovered_prompts.extend(valid_specs)
+                    logger.info(
+                        f"Discovered {len(valid_specs)} prompts from entrypoint '{entry_point.name}'"
+                    )
+
+                except Exception as e:
+                    logger.error(f"Failed to load entrypoint '{entry_point.name}': {e}")
+                    continue
+
+        except Exception as e:
+            logger.error(f"Failed to discover entrypoints: {e}")
+
+        if not discovered_prompts:
+            logger.info("No prompts discovered from entrypoints")
+
+        return discovered_prompts
+
     def initialize(self):
         """Initialize the extension."""
         super().initialize()
@@ -200,10 +303,14 @@ class MCPExtensionApp(ExtensionApp):
                 parent=self, name=self.mcp_name, port=self.mcp_port
             )
 
-            # Register tools from entrypoints, then from configuration
+            # Register tools and prompts from entrypoints, then from configuration
             entrypoint_tools = self._discover_entrypoint_tools()
             self._register_tools(entrypoint_tools, source="entrypoints")
             self._register_tools(self.mcp_tools, source="configuration")
+
+            entrypoint_prompts = self._discover_entrypoint_prompts()
+            self._register_prompts(entrypoint_prompts, source="entrypoints")
+            self._register_prompts(self.mcp_prompts, source="configuration")
 
             # Start the MCP server in a background task
             self.mcp_server_task = asyncio.create_task(
@@ -213,9 +320,11 @@ class MCPExtensionApp(ExtensionApp):
             # Give the server a moment to start
             await asyncio.sleep(0.5)
 
-            registered_count = len(self.mcp_server_instance._registered_tools)
+            registered_tools_count = len(self.mcp_server_instance._registered_tools)
+            registered_prompts_count = len(self.mcp_server_instance._registered_prompts)
             self.log.info(f"✅ MCP server started on port {self.mcp_port}")
-            self.log.info(f"Total registered tools: {registered_count}")
+            self.log.info(f"Total registered tools: {registered_tools_count}")
+            self.log.info(f"Total registered prompts: {registered_prompts_count}")
 
         except Exception as e:
             self.log.error(f"Failed to start MCP server: {e}")

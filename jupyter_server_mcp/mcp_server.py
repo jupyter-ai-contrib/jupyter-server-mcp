@@ -265,9 +265,10 @@ class MCPServer(LoggingConfigurable):
         """
         super().__init__(**kwargs)
 
-        # Initialize FastMCP and tools registry
+        # Initialize FastMCP and tools/prompts registry
         self.mcp = FastMCP(self.name)
         self._registered_tools = {}
+        self._registered_prompts = {}
         self.log.info(
             f"Initialized MCP server '{self.name}' on {self.host}:{self.port}"
         )
@@ -343,6 +344,67 @@ class MCPServer(LoggingConfigurable):
     def get_tool_info(self, tool_name: str) -> dict[str, Any] | None:
         """Get information about a specific tool."""
         return self._registered_tools.get(tool_name)
+
+    def register_prompt(
+        self,
+        func: Callable,
+        name: str | None = None,
+        description: str | None = None,
+    ):
+        """Register a Python function as an MCP prompt.
+
+        Args:
+            func: Python function to register as a prompt
+            name: Optional prompt name (defaults to function name)
+            description: Optional prompt description (defaults to function
+                docstring)
+        """
+        prompt_name = name or func.__name__
+        prompt_description = description or func.__doc__ or f"Prompt: {prompt_name}"
+
+        self.log.info(f"Registering prompt: {prompt_name}")
+        self.log.debug(
+            f"Prompt details - Name: {prompt_name}, "
+            f"Description: {prompt_description}, Async: {iscoroutinefunction(func)}"
+        )
+
+        # Register with FastMCP using the @mcp.prompt decorator
+        self.mcp.prompt(func)
+
+        # Keep track for listing
+        self._registered_prompts[prompt_name] = {
+            "name": prompt_name,
+            "description": prompt_description,
+            "function": func,
+            "is_async": iscoroutinefunction(func),
+        }
+
+    def register_prompts(self, prompts: list[Callable] | dict[str, Callable]):
+        """Register multiple Python functions as MCP prompts.
+
+        Args:
+            prompts: List of functions or dict mapping names to functions
+        """
+        if isinstance(prompts, list):
+            for func in prompts:
+                self.register_prompt(func)
+        elif isinstance(prompts, dict):
+            for name, func in prompts.items():
+                self.register_prompt(func, name=name)
+        else:
+            msg = "prompts must be a list of functions or dict mapping names to functions"
+            raise ValueError(msg)
+
+    def list_prompts(self) -> list[dict[str, Any]]:
+        """List all registered prompts."""
+        return [
+            {"name": prompt["name"], "description": prompt["description"]}
+            for prompt in self._registered_prompts.values()
+        ]
+
+    def get_prompt_info(self, prompt_name: str) -> dict[str, Any] | None:
+        """Get information about a specific prompt."""
+        return self._registered_prompts.get(prompt_name)
 
     async def start_server(self, host: str | None = None):
         """Start the MCP server on the specified host and port."""
