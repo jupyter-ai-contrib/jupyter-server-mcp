@@ -254,7 +254,9 @@ class MCPExtensionApp(ExtensionApp):
                         continue
 
                     # Validate and collect prompt specs
-                    valid_specs = [spec for spec in prompt_specs if isinstance(spec, str)]
+                    valid_specs = [
+                        spec for spec in prompt_specs if isinstance(spec, str)
+                    ]
                     invalid_count = len(prompt_specs) - len(valid_specs)
 
                     if invalid_count > 0:

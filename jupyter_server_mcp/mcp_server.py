@@ -392,7 +392,9 @@ class MCPServer(LoggingConfigurable):
             for name, func in prompts.items():
                 self.register_prompt(func, name=name)
         else:
-            msg = "prompts must be a list of functions or dict mapping names to functions"
+            msg = (
+                "prompts must be a list of functions or dict mapping names to functions"
+            )
             raise ValueError(msg)
 
     def list_prompts(self) -> list[dict[str, Any]]:
