@@ -613,9 +613,7 @@ class TestEntrypointDiscovery:
                     "_discover_entrypoint_prompts",
                     return_value=discovered_prompts,
                 ),
-                patch.object(
-                    extension, "_discover_entrypoint_tools", return_value=[]
-                ),
+                patch.object(extension, "_discover_entrypoint_tools", return_value=[]),
             ):
                 await extension.start_extension()
 
