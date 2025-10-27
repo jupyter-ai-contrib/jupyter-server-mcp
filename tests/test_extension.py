@@ -72,7 +72,8 @@ class TestMCPExtensionLifecycle:
         with patch("jupyter_server_mcp.extension.MCPServer") as mock_mcp_class:
             mock_server = Mock()
             mock_server.start_server = AsyncMock()
-            mock_server._registered_tools = []  # Use list instead of Mock
+            mock_server._registered_tools = {}
+            mock_server._registered_prompts = {}
             mock_mcp_class.return_value = mock_server
 
             await extension.start_extension()
@@ -163,7 +164,8 @@ class TestMCPExtensionLifecycle:
         with patch("jupyter_server_mcp.extension.MCPServer") as mock_mcp_class:
             mock_server = Mock()
             mock_server.start_server = AsyncMock()
-            mock_server._registered_tools = []  # Use list instead of Mock
+            mock_server._registered_tools = {}
+            mock_server._registered_prompts = {}
             mock_mcp_class.return_value = mock_server
 
             # Start extension
@@ -323,8 +325,8 @@ class TestToolLoading:
         extension = MCPExtensionApp()
         extension.mcp_server_instance = Mock()
         extension.mcp_prompts = [
-            "package.prompts:code_review",
-            "package.prompts:documentation",
+            "os:getcwd",
+            "json:dumps",
         ]
 
         # Capture log output
@@ -336,6 +338,12 @@ class TestToolLoading:
 
             # Check log messages
             mock_logger.info.assert_any_call("Registering 2 prompts from configuration")
+            mock_logger.info.assert_any_call(
+                "✅ Registered prompt from configuration: os:getcwd"
+            )
+            mock_logger.info.assert_any_call(
+                "✅ Registered prompt from configuration: json:dumps"
+            )
 
     def test_register_configured_prompts_with_errors(self):
         """Test registering prompts when some fail to load."""
@@ -378,6 +386,7 @@ class TestExtensionWithTools:
                 "getcwd": {},
                 "sqrt": {},
             }  # Mock registered tools
+            mock_server._registered_prompts = {}
             mock_mcp_class.return_value = mock_server
 
             await extension.start_extension()
@@ -401,6 +410,7 @@ class TestExtensionWithTools:
             mock_server = Mock()
             mock_server.start_server = AsyncMock()
             mock_server._registered_tools = {}
+            mock_server._registered_prompts = {}
             mock_mcp_class.return_value = mock_server
 
             await extension.start_extension()
@@ -495,6 +505,7 @@ class TestEntrypointDiscovery:
             mock_server = Mock()
             mock_server.start_server = AsyncMock()
             mock_server._registered_tools = {"getcwd": {}, "dumps": {}}
+            mock_server._registered_prompts = {}
             mock_mcp_class.return_value = mock_server
 
             with patch.object(
@@ -593,17 +604,17 @@ class TestEntrypointDiscovery:
         extension = MCPExtensionApp()
         extension.mcp_port = 3087
         extension.use_tool_discovery = True
-        extension.mcp_prompts = ["package.prompts:config_prompt"]
+        extension.mcp_prompts = ["json:dumps"]
 
-        discovered_prompts = ["package.prompts:discovered_prompt"]
+        discovered_prompts = ["os:getcwd"]
 
         with patch("jupyter_server_mcp.extension.MCPServer") as mock_mcp_class:
             mock_server = Mock()
             mock_server.start_server = AsyncMock()
             mock_server._registered_tools = {}
             mock_server._registered_prompts = {
-                "discovered_prompt": {},
-                "config_prompt": {},
+                "getcwd": {},
+                "dumps": {},
             }
             mock_mcp_class.return_value = mock_server
 
@@ -626,13 +637,13 @@ class TestEntrypointDiscovery:
         extension = MCPExtensionApp()
         extension.mcp_port = 3088
         extension.mcp_tools = ["os:getcwd"]
-        extension.mcp_prompts = ["package.prompts:review"]
+        extension.mcp_prompts = ["json:dumps"]
 
         with patch("jupyter_server_mcp.extension.MCPServer") as mock_mcp_class:
             mock_server = Mock()
             mock_server.start_server = AsyncMock()
             mock_server._registered_tools = {"getcwd": {}}
-            mock_server._registered_prompts = {"review": {}}
+            mock_server._registered_prompts = {"dumps": {}}
             mock_mcp_class.return_value = mock_server
 
             with (
