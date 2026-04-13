@@ -72,6 +72,23 @@ If a client asks for a transport type, choose `HTTP` or `Streamable HTTP`.
 The list below is intentionally curated rather than exhaustive and focuses on terminal-based coding agents.
 For a broader, community-maintained directory of MCP-compatible clients, see the MCP client directory: <https://modelcontextprotocol.io/clients>.
 
+**OpenCode**
+
+Use `opencode mcp add`, or add the following to `opencode.json` or `~/.config/opencode/opencode.json`:
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "jupyter-mcp": {
+      "type": "remote",
+      "url": "http://localhost:3001/mcp",
+      "enabled": true
+    }
+  }
+}
+```
+
 **Claude Code**
 
 Add the following to `.mcp.json`:
@@ -117,6 +134,22 @@ Add the following to `.gemini/settings.json`:
   "mcpServers": {
     "jupyter-mcp": {
       "httpUrl": "http://localhost:3001/mcp"
+    }
+  }
+}
+```
+
+**Copilot CLI**
+
+Use `/mcp add` in interactive mode, or add the following to `~/.copilot/mcp-config.json`:
+
+```json
+{
+  "mcpServers": {
+    "jupyter-mcp": {
+      "type": "http",
+      "url": "http://localhost:3001/mcp",
+      "tools": ["*"]
     }
   }
 }
