@@ -1,5 +1,8 @@
 # Jupyter Server MCP Extension
 
+[![PyPI version](https://img.shields.io/pypi/v/jupyter-server-mcp.svg)](https://pypi.org/project/jupyter-server-mcp/)
+[![conda-forge version](https://img.shields.io/conda/vn/conda-forge/jupyter-server-mcp.svg)](https://anaconda.org/conda-forge/jupyter-server-mcp)
+
 A configurable MCP (Model Context Protocol) server extension for Jupyter Server that allows dynamic registration of Python functions as tools accessible to MCP clients from a running Jupyter Server.
 
 https://github.com/user-attachments/assets/aa779b1c-a443-48d7-b3eb-13f27a4333b3
@@ -19,8 +22,30 @@ This extension provides a simplified, trait-based approach to exposing Jupyter f
 
 ## Installation
 
+Install `jupyter-server-mcp` into the same environment as Jupyter Server or JupyterLab.
+
+### pip
+
 ```bash
-pip install jupyter-server-mcp
+python -m pip install jupyter-server-mcp
+```
+
+### conda / mamba / micromamba
+
+```bash
+conda install -c conda-forge jupyter-server-mcp
+mamba install -c conda-forge jupyter-server-mcp
+micromamba install -c conda-forge jupyter-server-mcp
+```
+
+### pixi
+
+In an existing Pixi workspace:
+
+```bash
+# If conda-forge is not already configured for the workspace
+pixi project channel add conda-forge
+pixi add jupyter-server-mcp
 ```
 
 ## Quick Start
