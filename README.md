@@ -14,7 +14,7 @@ This extension provides a simplified, trait-based approach to exposing Jupyter f
 - **Configurable Tool Loading**: Register tools via string specifications (`module:function`)
 - **Automatic Tool Discovery**: Python packages can expose tools via entrypoints
 - **Jupyter Integration**: Seamless integration with Jupyter Server extension system
-- **HTTP Transport**: FastMCP-based HTTP server with proper MCP protocol support
+- **Streamable HTTP Transport**: FastMCP-based HTTP server with proper MCP protocol support
 - **Traitlets Configuration**: Full configuration support through Jupyter's traitlets system
 
 ## Installation
@@ -34,7 +34,9 @@ c = get_config()
 
 # Basic MCP server settings
 c.MCPExtensionApp.mcp_name = "My Jupyter MCP Server"
-c.MCPExtensionApp.mcp_port = 8080
+
+# Optional: override the default MCP port (3001)
+# c.MCPExtensionApp.mcp_port = 8080
 
 # Register tools from existing packages
 c.MCPExtensionApp.mcp_tools = [
@@ -59,19 +61,28 @@ c.MCPExtensionApp.mcp_tools = [
 jupyter lab --config=jupyter_config.py
 ```
 
-The MCP server will start automatically on `http://localhost:8080/mcp`.
+The MCP server will start automatically on `http://localhost:3001/mcp` by default.
 
-### 3. Connect MCP Clients
+### 3. CLI MCP Client Configuration
 
-**Claude Code Configuration:**
+By default, this extension exposes a FastMCP streamable HTTP endpoint at `http://localhost:3001/mcp`.
+If you set `c.MCPExtensionApp.mcp_port`, replace `3001` in the examples below.
+If a client asks for a transport type, choose `HTTP` or `Streamable HTTP`.
 
-Set the following configuration:
+The list below is intentionally curated rather than exhaustive and focuses on terminal-based coding agents.
+For a broader, community-maintained directory of MCP-compatible clients, see the MCP client directory: <https://modelcontextprotocol.io/clients>.
+
+**Claude Code**
+
+Add the following to `.mcp.json`:
 
 ```json
-"mcpServers": {
-  "jupyter-mcp": {
-    "type": "http",
-    "url": "http://localhost:8085/mcp"
+{
+  "mcpServers": {
+    "jupyter-mcp": {
+      "type": "http",
+      "url": "http://localhost:3001/mcp"
+    }
   }
 }
 ```
@@ -79,10 +90,25 @@ Set the following configuration:
 Or use the `claude` CLI:
 
 ```bash
-claude mcp add --transport http jupyter-mcp http://localhost:8080/mcp
+claude mcp add --transport http jupyter-mcp http://localhost:3001/mcp
 ```
 
-**Gemini CLI Configuration:**
+**Codex**
+
+Use the `codex` CLI:
+
+```bash
+codex mcp add jupyter-mcp --url http://localhost:3001/mcp
+```
+
+Or add the following to `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.jupyter-mcp]
+url = "http://localhost:3001/mcp"
+```
+
+**Gemini CLI**
 
 Add the following to `.gemini/settings.json`:
 
@@ -90,7 +116,7 @@ Add the following to `.gemini/settings.json`:
 {
   "mcpServers": {
     "jupyter-mcp": {
-      "httpUrl": "http://localhost:8080/mcp"
+      "httpUrl": "http://localhost:3001/mcp"
     }
   }
 }
@@ -190,7 +216,9 @@ c.MCPExtensionApp.use_tool_discovery = False
 ### Minimal Setup
 ```python
 c = get_config()
-c.MCPExtensionApp.mcp_port = 8080
+
+# Optional: override the default port (3001)
+# c.MCPExtensionApp.mcp_port = 8080
 ```
 
 ### Full Configuration
