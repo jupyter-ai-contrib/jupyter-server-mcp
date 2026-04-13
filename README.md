@@ -89,6 +89,17 @@ Use `opencode mcp add`, or add the following to `opencode.json` or `~/.config/op
 }
 ```
 
+**Mistral Vibe**
+
+Add the following to `./.vibe/config.toml` or `~/.vibe/config.toml`:
+
+```toml
+[[mcp_servers]]
+name = "jupyter-mcp"
+transport = "streamable-http"
+url = "http://localhost:3001/mcp"
+```
+
 **Claude Code**
 
 Add the following to `.mcp.json`:
