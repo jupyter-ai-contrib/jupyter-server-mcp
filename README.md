@@ -63,10 +63,16 @@ jupyter lab --config=jupyter_config.py
 
 The MCP server will start automatically on `http://localhost:3001/mcp` by default.
 
+Any trait can also be set directly on the command line, without a config file. For example, to override the port:
+
+```bash
+jupyter lab --MCPExtensionApp.mcp_port=8080
+```
+
 ### 3. CLI MCP Client Configuration
 
 By default, this extension exposes a FastMCP streamable HTTP endpoint at `http://localhost:3001/mcp`.
-If you set `c.MCPExtensionApp.mcp_port`, replace `3001` in the examples below.
+If you override the port via `c.MCPExtensionApp.mcp_port` or the `--MCPExtensionApp.mcp_port=<port>` CLI flag, replace `3001` in the examples below.
 If a client asks for a transport type, choose `HTTP` or `Streamable HTTP`.
 
 The list below is intentionally curated rather than exhaustive and focuses on terminal-based coding agents.
