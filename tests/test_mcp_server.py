@@ -27,6 +27,26 @@ def function_with_docstring(message: str) -> str:
     return f"Printed: {message}"
 
 
+def simple_prompt(topic: str) -> str:
+    """Generate a prompt about a topic."""
+    return f"Please explain the concept of '{topic}' in detail."
+
+
+async def async_prompt(task: str, language: str = "Python") -> str:
+    """Generate a code generation prompt."""
+    await asyncio.sleep(0.001)  # Small delay
+    return f"Write a {language} function that performs the following task: {task}"
+
+
+def prompt_with_detailed_docstring(file_path: str, focus: str = "general") -> str:
+    """Generate a code review prompt.
+
+    This prompt helps reviewers focus on specific aspects of code quality.
+    Supports multiple focus areas including security, performance, and readability.
+    """
+    return f"Review the code in {file_path} with focus on {focus}."
+
+
 class TestMCPServer:
     """Test MCPServer functionality."""
 
@@ -39,6 +59,7 @@ class TestMCPServer:
         assert server.host == "localhost"
         assert server.mcp is not None
         assert len(server._registered_tools) == 0
+        assert len(server._registered_prompts) == 0
 
     def test_server_creation_with_params(self):
         """Test server creation with custom parameters."""
@@ -165,6 +186,135 @@ class TestMCPServer:
         assert info is not None
         assert info["name"] == "simple_function"
         assert info["function"] == simple_function
+
+    def test_register_single_prompt(self):
+        """Test registering a single prompt."""
+        server = MCPServer()
+
+        server.register_prompt(simple_prompt)
+
+        # Check prompt was registered
+        assert len(server._registered_prompts) == 1
+        assert "simple_prompt" in server._registered_prompts
+
+        prompt_info = server._registered_prompts["simple_prompt"]
+        assert prompt_info["name"] == "simple_prompt"
+        assert prompt_info["description"] == "Generate a prompt about a topic."
+        assert prompt_info["function"] == simple_prompt
+        assert prompt_info["is_async"] is False
+
+    def test_register_prompt_with_custom_name(self):
+        """Test registering a prompt with custom name."""
+        server = MCPServer()
+
+        server.register_prompt(simple_prompt, name="topic_explainer")
+
+        assert "topic_explainer" in server._registered_prompts
+        assert "simple_prompt" not in server._registered_prompts
+
+        prompt_info = server._registered_prompts["topic_explainer"]
+        assert prompt_info["name"] == "topic_explainer"
+
+    def test_register_prompt_with_custom_description(self):
+        """Test registering a prompt with custom description."""
+        server = MCPServer()
+
+        server.register_prompt(simple_prompt, description="Custom prompt description")
+
+        prompt_info = server._registered_prompts["simple_prompt"]
+        assert prompt_info["description"] == "Custom prompt description"
+
+    def test_register_async_prompt(self):
+        """Test registering an async prompt."""
+        server = MCPServer()
+
+        server.register_prompt(async_prompt)
+
+        prompt_info = server._registered_prompts["async_prompt"]
+        assert prompt_info["is_async"] is True
+
+    def test_register_prompts_as_list(self):
+        """Test registering multiple prompts as a list."""
+        server = MCPServer()
+
+        server.register_prompts([simple_prompt, async_prompt])
+
+        assert len(server._registered_prompts) == 2
+        assert "simple_prompt" in server._registered_prompts
+        assert "async_prompt" in server._registered_prompts
+
+    def test_register_prompts_as_dict(self):
+        """Test registering multiple prompts as a dict."""
+        server = MCPServer()
+
+        prompts = {"explainer": simple_prompt, "code_gen": async_prompt}
+        server.register_prompts(prompts)
+
+        assert len(server._registered_prompts) == 2
+        assert "explainer" in server._registered_prompts
+        assert "code_gen" in server._registered_prompts
+
+        assert server._registered_prompts["explainer"]["function"] == simple_prompt
+        assert server._registered_prompts["code_gen"]["function"] == async_prompt
+
+    def test_register_prompts_invalid_type(self):
+        """Test registering prompts with invalid type."""
+        server = MCPServer()
+
+        with pytest.raises(
+            ValueError, match="prompts must be a list of functions or dict"
+        ):
+            server.register_prompts("invalid")
+
+    def test_list_prompts(self):
+        """Test listing registered prompts."""
+        server = MCPServer()
+
+        # Initially empty
+        assert server.list_prompts() == []
+
+        # After registering prompts
+        server.register_prompt(simple_prompt)
+        server.register_prompt(prompt_with_detailed_docstring)
+
+        prompts = server.list_prompts()
+        assert len(prompts) == 2
+
+        prompt_names = [p["name"] for p in prompts]
+        assert "simple_prompt" in prompt_names
+        assert "prompt_with_detailed_docstring" in prompt_names
+
+        # Check structure
+        for prompt in prompts:
+            assert "name" in prompt
+            assert "description" in prompt
+
+    def test_get_prompt_info(self):
+        """Test getting prompt information."""
+        server = MCPServer()
+
+        # Non-existent prompt
+        assert server.get_prompt_info("nonexistent") is None
+
+        # Existing prompt
+        server.register_prompt(simple_prompt)
+        info = server.get_prompt_info("simple_prompt")
+
+        assert info is not None
+        assert info["name"] == "simple_prompt"
+        assert info["function"] == simple_prompt
+
+    def test_tools_and_prompts_together(self):
+        """Test registering both tools and prompts in the same server."""
+        server = MCPServer()
+
+        server.register_tool(simple_function)
+        server.register_prompt(simple_prompt)
+
+        assert len(server._registered_tools) == 1
+        assert len(server._registered_prompts) == 1
+        assert "simple_function" in server._registered_tools
+        assert "simple_prompt" in server._registered_prompts
 
 
 class TestMCPServerDirect:

@@ -35,6 +35,16 @@ class TestMCPExtensionApp:
         extension.mcp_tools = ["os:getcwd", "math:sqrt"]
         assert extension.mcp_tools == ["os:getcwd", "math:sqrt"]
 
+        # Test prompts configuration
+        extension.mcp_prompts = [
+            "package.prompts:code_review",
+            "package.prompts:documentation",
+        ]
+        assert extension.mcp_prompts == [
+            "package.prompts:code_review",
+            "package.prompts:documentation",
+        ]
+
     def test_initialize_handlers(self):
         """Test handler initialization (should be no-op)."""
         extension = MCPExtensionApp()
@@ -62,7 +72,8 @@ class TestMCPExtensionLifecycle:
         with patch("jupyter_server_mcp.extension.MCPServer") as mock_mcp_class:
             mock_server = Mock()
             mock_server.start_server = AsyncMock()
-            mock_server._registered_tools = []  # Use list instead of Mock
+            mock_server._registered_tools = {}
+            mock_server._registered_prompts = {}
             mock_mcp_class.return_value = mock_server
 
             await extension.start_extension()
@@ -153,7 +164,8 @@ class TestMCPExtensionLifecycle:
         with patch("jupyter_server_mcp.extension.MCPServer") as mock_mcp_class:
             mock_server = Mock()
             mock_server.start_server = AsyncMock()
-            mock_server._registered_tools = []  # Use list instead of Mock
+            mock_server._registered_tools = {}
+            mock_server._registered_prompts = {}
             mock_mcp_class.return_value = mock_server
 
             # Start extension
@@ -298,6 +310,63 @@ class TestToolLoading:
                 "Could not import module 'invalid': No module named 'invalid'"
             )
 
+    def test_register_configured_prompts_empty(self):
+        """Test registering prompts when mcp_prompts is empty."""
+        extension = MCPExtensionApp()
+        extension.mcp_server_instance = Mock()
+        extension.mcp_prompts = []
+
+        # Should not call register_prompt
+        extension._register_prompts(extension.mcp_prompts, source="configuration")
+        extension.mcp_server_instance.register_prompt.assert_not_called()
+
+    def test_register_configured_prompts_valid(self):
+        """Test registering valid configured prompts."""
+        extension = MCPExtensionApp()
+        extension.mcp_server_instance = Mock()
+        extension.mcp_prompts = [
+            "os:getcwd",
+            "json:dumps",
+        ]
+
+        # Capture log output
+        with patch("jupyter_server_mcp.extension.logger") as mock_logger:
+            extension._register_prompts(extension.mcp_prompts, source="configuration")
+
+            # Should register both prompts
+            assert extension.mcp_server_instance.register_prompt.call_count == 2
+
+            # Check log messages
+            mock_logger.info.assert_any_call("Registering 2 prompts from configuration")
+            mock_logger.info.assert_any_call(
+                "✅ Registered prompt from configuration: os:getcwd"
+            )
+            mock_logger.info.assert_any_call(
+                "✅ Registered prompt from configuration: json:dumps"
+            )
+
+    def test_register_configured_prompts_with_errors(self):
+        """Test registering prompts when some fail to load."""
+        extension = MCPExtensionApp()
+        extension.mcp_server_instance = Mock()
+        extension.mcp_prompts = [
+            "os:getcwd",  # Valid import but might not be a good prompt
+            "invalid:function",
+            "json:dumps",
+        ]
+
+        with patch("jupyter_server_mcp.extension.logger") as mock_logger:
+            extension._register_prompts(extension.mcp_prompts, source="configuration")
+
+            # Should register 2 valid prompts (os:getcwd and json:dumps)
+            assert extension.mcp_server_instance.register_prompt.call_count == 2
+
+            # Check error logging for the invalid one
+            mock_logger.error.assert_any_call(
+                "❌ Failed to register prompt 'invalid:function' from configuration: "
+                "Could not import module 'invalid': No module named 'invalid'"
+            )
+
 
 class TestExtensionWithTools:
     """Test extension lifecycle with configured tools."""
@@ -317,6 +386,7 @@ class TestExtensionWithTools:
                 "getcwd": {},
                 "sqrt": {},
             }  # Mock registered tools
+            mock_server._registered_prompts = {}
             mock_mcp_class.return_value = mock_server
 
             await extension.start_extension()
@@ -340,6 +410,7 @@ class TestExtensionWithTools:
             mock_server = Mock()
             mock_server.start_server = AsyncMock()
             mock_server._registered_tools = {}
+            mock_server._registered_prompts = {}
             mock_mcp_class.return_value = mock_server
 
             await extension.start_extension()
@@ -434,6 +505,7 @@ class TestEntrypointDiscovery:
             mock_server = Mock()
             mock_server.start_server = AsyncMock()
             mock_server._registered_tools = {"getcwd": {}, "dumps": {}}
+            mock_server._registered_prompts = {}
             mock_mcp_class.return_value = mock_server
 
             with patch.object(
@@ -443,3 +515,145 @@ class TestEntrypointDiscovery:
 
                 # Should register both entrypoint (1) and configured (1) tools = 2 total
                 assert mock_server.register_tool.call_count == 2
+
+    def test_discover_entrypoint_prompts_multiple_types(self):
+        """Test discovering prompts from both list and function entrypoints."""
+        extension = MCPExtensionApp()
+
+        # Create mock entrypoints - one list, one function
+        mock_ep1 = Mock()
+        mock_ep1.name = "package1_prompts"
+        mock_ep1.value = "package1.prompts:PROMPTS"
+        mock_ep1.load.return_value = [
+            "package1.prompts:code_review",
+            "package1.prompts:documentation",
+        ]
+
+        mock_ep2 = Mock()
+        mock_ep2.name = "package2_prompts"
+        mock_ep2.value = "package2.prompts:get_prompts"
+        mock_function = Mock(
+            return_value=[
+                "package2.prompts:test_gen",
+                "package2.prompts:refactor",
+            ]
+        )
+        mock_ep2.load.return_value = mock_function
+
+        with patch("importlib.metadata.entry_points") as mock_ep_func:
+            mock_ep_func.return_value.select = Mock(return_value=[mock_ep1, mock_ep2])
+
+            prompts = extension._discover_entrypoint_prompts()
+            assert len(prompts) == 4
+            assert set(prompts) == {
+                "package1.prompts:code_review",
+                "package1.prompts:documentation",
+                "package2.prompts:test_gen",
+                "package2.prompts:refactor",
+            }
+            mock_function.assert_called_once()  # Function was called
+
+    def test_discover_entrypoint_prompts_error_handling(self):
+        """Test that prompt discovery handles invalid entrypoints gracefully."""
+        extension = MCPExtensionApp()
+
+        # Mix of valid and invalid entrypoints
+        valid_ep = Mock()
+        valid_ep.name = "valid"
+        valid_ep.load.return_value = ["package.prompts:valid_prompt"]
+
+        invalid_type_ep = Mock()
+        invalid_type_ep.name = "invalid_type"
+        invalid_type_ep.load.return_value = "not_a_list"
+
+        function_bad_return_ep = Mock()
+        function_bad_return_ep.name = "bad_function"
+        function_bad_return_ep.load.return_value = Mock(return_value={"not": "list"})
+
+        load_error_ep = Mock()
+        load_error_ep.name = "load_error"
+        load_error_ep.load.side_effect = ImportError("Module not found")
+
+        with patch("importlib.metadata.entry_points") as mock_ep_func:
+            mock_ep_func.return_value.select = Mock(
+                return_value=[
+                    valid_ep,
+                    invalid_type_ep,
+                    function_bad_return_ep,
+                    load_error_ep,
+                ]
+            )
+
+            with patch("jupyter_server_mcp.extension.logger"):
+                prompts = extension._discover_entrypoint_prompts()
+                # Should only get the valid one
+                assert prompts == ["package.prompts:valid_prompt"]
+
+    def test_discover_entrypoint_prompts_disabled(self):
+        """Test that prompt discovery returns empty list when disabled."""
+        extension = MCPExtensionApp()
+        extension.use_tool_discovery = False
+
+        # Should return empty without trying to discover
+        prompts = extension._discover_entrypoint_prompts()
+        assert prompts == []
+
+    @pytest.mark.asyncio
+    async def test_start_extension_with_prompts_entrypoints_and_config(self):
+        """Test extension startup with both entrypoint and configured prompts."""
+        extension = MCPExtensionApp()
+        extension.mcp_port = 3087
+        extension.use_tool_discovery = True
+        extension.mcp_prompts = ["json:dumps"]
+
+        discovered_prompts = ["os:getcwd"]
+
+        with patch("jupyter_server_mcp.extension.MCPServer") as mock_mcp_class:
+            mock_server = Mock()
+            mock_server.start_server = AsyncMock()
+            mock_server._registered_tools = {}
+            mock_server._registered_prompts = {
+                "getcwd": {},
+                "dumps": {},
+            }
+            mock_mcp_class.return_value = mock_server
+
+            with (
+                patch.object(
+                    extension,
+                    "_discover_entrypoint_prompts",
+                    return_value=discovered_prompts,
+                ),
+                patch.object(extension, "_discover_entrypoint_tools", return_value=[]),
+            ):
+                await extension.start_extension()
+
+                # Should register both entrypoint (1) and configured (1) prompts = 2 total
+                assert mock_server.register_prompt.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_start_extension_with_tools_and_prompts(self):
+        """Test extension startup with both tools and prompts."""
+        extension = MCPExtensionApp()
+        extension.mcp_port = 3088
+        extension.mcp_tools = ["os:getcwd"]
+        extension.mcp_prompts = ["json:dumps"]
+
+        with patch("jupyter_server_mcp.extension.MCPServer") as mock_mcp_class:
+            mock_server = Mock()
+            mock_server.start_server = AsyncMock()
+            mock_server._registered_tools = {"getcwd": {}}
+            mock_server._registered_prompts = {"dumps": {}}
+            mock_mcp_class.return_value = mock_server
+
+            with (
+                patch.object(extension, "_discover_entrypoint_tools", return_value=[]),
+                patch.object(
+                    extension, "_discover_entrypoint_prompts", return_value=[]
+                ),
+            ):
+                await extension.start_extension()
+
+                # Should register 1 tool and 1 prompt
+                assert mock_server.register_tool.call_count == 1
+                assert mock_server.register_prompt.call_count == 1
