@@ -1,13 +1,16 @@
 """Test the simplified MCP server functionality."""
 
 import asyncio
+import signal
 from unittest.mock import AsyncMock
 
 import pytest
+import uvicorn
 
 from jupyter_server_mcp.mcp_server import (
     MCPServer,
     MCPServerPortError,
+    _EmbeddedUvicornServer,
     _wrap_with_json_conversion,
 )
 
@@ -21,6 +24,10 @@ async def async_function(name: str) -> str:
     """Async greeting function."""
     await asyncio.sleep(0.001)  # Small delay
     return f"Hello, {name}!"
+
+
+async def empty_asgi_app(_scope, _receive, _send) -> None:
+    """Minimal ASGI app for Uvicorn server unit tests."""
 
 
 def function_with_docstring(message: str) -> str:
@@ -171,11 +178,29 @@ class TestMCPServer:
         assert info["name"] == "simple_function"
         assert info["function"] == simple_function
 
+    def test_embedded_uvicorn_server_does_not_capture_signals(self, monkeypatch):
+        """Test that embedded Uvicorn leaves Ctrl-C handling to Jupyter."""
+        captured_signals = []
+
+        def record_signal(sig, handler):
+            captured_signals.append((sig, handler))
+
+        monkeypatch.setattr(signal, "signal", record_signal)
+
+        uvicorn_server = _EmbeddedUvicornServer(
+            config=uvicorn.Config(app=empty_asgi_app)
+        )
+
+        with uvicorn_server.capture_signals():
+            pass
+
+        assert captured_signals == []
+
     @pytest.mark.asyncio
     async def test_start_server_checks_port_before_uvicorn(self, monkeypatch):
         """Test that occupied ports fail before Uvicorn starts."""
         server = MCPServer(port=3001)
-        server.mcp.run_http_async = AsyncMock()
+        server._run_http_async_without_signals = AsyncMock()
 
         def raise_port_error(host, port):
             msg = f"Port {port} is already in use on {host}"
@@ -188,14 +213,14 @@ class TestMCPServer:
         with pytest.raises(MCPServerPortError, match="Port 3001 is already in use"):
             await server.start_server()
 
-        server.mcp.run_http_async.assert_not_called()
+        server._run_http_async_without_signals.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_start_server_runs_http_after_port_check(self, monkeypatch):
         """Test that startup continues when the configured port can be bound."""
         checked_addresses = []
         server = MCPServer(port=3050)
-        server.mcp.run_http_async = AsyncMock()
+        server._run_http_async_without_signals = AsyncMock()
 
         def record_port_check(host, port):
             checked_addresses.append((host, port))
@@ -207,7 +232,21 @@ class TestMCPServer:
         await server.start_server()
 
         assert checked_addresses == [("localhost", 3050)]
-        server.mcp.run_http_async.assert_called_once_with(host="localhost", port=3050)
+        server._run_http_async_without_signals.assert_called_once_with(
+            host="localhost", port=3050
+        )
+
+    @pytest.mark.asyncio
+    async def test_stop_server_requests_uvicorn_exit(self):
+        """Test that graceful shutdown asks the embedded Uvicorn server to exit."""
+        server = MCPServer()
+        server._uvicorn_server = _EmbeddedUvicornServer(
+            config=uvicorn.Config(app=empty_asgi_app)
+        )
+
+        await server.stop_server()
+
+        assert server._uvicorn_server.should_exit is True
 
 
 class TestMCPServerDirect:

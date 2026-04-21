@@ -1,5 +1,7 @@
 """Simple MCP server for registering Python functions as tools."""
 
+import asyncio
+import contextlib
 import inspect
 import json
 import logging
@@ -9,7 +11,10 @@ from functools import wraps
 from inspect import iscoroutinefunction, signature
 from typing import Any, Union, get_args, get_origin
 
+import uvicorn
 from fastmcp import FastMCP
+from fastmcp.utilities.cli import log_server_banner
+from fastmcp.utilities.logging import temporary_log_level
 from traitlets import Int, Unicode
 from traitlets.config.configurable import LoggingConfigurable
 
@@ -18,6 +23,15 @@ logger = logging.getLogger(__name__)
 
 class MCPServerPortError(RuntimeError):
     """Raised when the configured MCP server port cannot be bound."""
+
+
+class _EmbeddedUvicornServer(uvicorn.Server):
+    """Uvicorn server variant that leaves process signals to Jupyter Server."""
+
+    @contextlib.contextmanager
+    def capture_signals(self):
+        """Do not install SIGINT/SIGTERM handlers for embedded servers."""
+        yield
 
 
 def _ensure_port_available(host: str, port: int) -> None:
@@ -270,6 +284,8 @@ def _update_schema_for_json_args(func: Callable, tool) -> None:
 class MCPServer(LoggingConfigurable):
     """Simple MCP server that allows registering Python functions as tools."""
 
+    supports_graceful_stop = True
+
     # Configurable traits
     name = Unicode(
         default_value="Jupyter MCP Server", help="Name for the MCP server"
@@ -294,6 +310,7 @@ class MCPServer(LoggingConfigurable):
         # Initialize FastMCP and tools registry
         self.mcp = FastMCP(self.name)
         self._registered_tools = {}
+        self._uvicorn_server: uvicorn.Server | None = None
         self.log.info(
             f"Initialized MCP server '{self.name}' on {self.host}:{self.port}"
         )
@@ -370,6 +387,67 @@ class MCPServer(LoggingConfigurable):
         """Get information about a specific tool."""
         return self._registered_tools.get(tool_name)
 
+    async def _run_http_async_without_signals(
+        self,
+        host: str,
+        port: int,
+        show_banner: bool = True,
+    ) -> None:
+        """Run FastMCP over HTTP without taking over process signal handlers."""
+        transport = "http"
+        default_log_level = self.mcp._deprecated_settings.log_level.lower()
+
+        app = self.mcp.http_app(transport=transport)
+        server_path = (
+            app.state.path.lstrip("/")
+            if hasattr(app, "state") and hasattr(app.state, "path")
+            else ""
+        )
+
+        if show_banner:
+            log_server_banner(
+                server=self.mcp,
+                transport=transport,
+                host=host,
+                port=port,
+                path=server_path,
+            )
+
+        config_kwargs: dict[str, Any] = {
+            "timeout_graceful_shutdown": 1,
+            "lifespan": "on",
+            "ws": "websockets-sansio",
+            "log_level": default_log_level,
+        }
+
+        with temporary_log_level(None):
+            async with self.mcp._lifespan_manager():
+                config = uvicorn.Config(app, host=host, port=port, **config_kwargs)
+                server = _EmbeddedUvicornServer(config)
+                self._uvicorn_server = server
+                path = getattr(app.state, "path", "").lstrip("/")
+                self.log.info(
+                    f"Starting MCP server {self.name!r} with transport "
+                    f"{transport!r} on http://{host}:{port}/{path}"
+                )
+
+                try:
+                    await server.serve()
+                except asyncio.CancelledError:
+                    server.should_exit = True
+                    if getattr(server, "started", False):
+                        with contextlib.suppress(Exception, asyncio.CancelledError):
+                            await server.shutdown()
+                    raise
+                finally:
+                    if self._uvicorn_server is server:
+                        self._uvicorn_server = None
+
+    async def stop_server(self) -> None:
+        """Request a graceful MCP HTTP server shutdown."""
+        if self._uvicorn_server is not None:
+            self._uvicorn_server.should_exit = True
+
     async def start_server(self, host: str | None = None):
         """Start the MCP server on the specified host and port."""
         server_host = host or self.host
@@ -380,4 +458,4 @@ class MCPServer(LoggingConfigurable):
         self.log.debug(f"Server configuration - Host: {server_host}, Port: {self.port}")
 
         # Start FastMCP server with HTTP transport
-        await self.mcp.run_http_async(host=server_host, port=self.port)
+        await self._run_http_async_without_signals(host=server_host, port=self.port)

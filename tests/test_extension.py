@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, Mock, patch
 import pytest
 
 from jupyter_server_mcp.extension import MCPExtensionApp
+from jupyter_server_mcp.mcp_server import MCPServer
 
 
 async def _run_until_cancelled():
@@ -139,6 +140,33 @@ class TestMCPExtensionLifecycle:
 
         # Verify cleanup
         assert task.cancelled()
+        assert extension.mcp_server_task is None
+        assert extension.mcp_server_instance is None
+
+    @pytest.mark.asyncio
+    async def test_stop_extension_uses_mcp_server_shutdown(self):
+        """Test stopping extension through the MCP server shutdown hook."""
+        extension = MCPExtensionApp()
+        stop_event = asyncio.Event()
+
+        async def dummy_task():
+            await stop_event.wait()
+
+        async def stop_server():
+            stop_event.set()
+
+        task = asyncio.create_task(dummy_task())
+        server = MCPServer()
+        server.stop_server = AsyncMock(side_effect=stop_server)
+
+        extension.mcp_server_task = task
+        extension.mcp_server_instance = server
+
+        await extension.stop_extension()
+
+        server.stop_server.assert_called_once()
+        assert task.done()
+        assert not task.cancelled()
         assert extension.mcp_server_task is None
         assert extension.mcp_server_instance is None
 

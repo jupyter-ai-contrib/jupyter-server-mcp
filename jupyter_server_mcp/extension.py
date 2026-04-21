@@ -49,6 +49,7 @@ class MCPExtensionApp(ExtensionApp):
 
     mcp_server_instance: object | None = None
     mcp_server_task: asyncio.Task | None = None
+    mcp_shutdown_timeout = 5
 
     def _load_function_from_string(self, tool_spec: str):
         """Load a function from a string specification.
@@ -200,6 +201,30 @@ class MCPExtensionApp(ExtensionApp):
         msg = "MCP server exited during startup"
         raise RuntimeError(msg)
 
+    async def _stop_mcp_server_task(self):
+        """Stop the MCP server through its own shutdown path, then fall back."""
+        if self.mcp_server_task is None or self.mcp_server_task.done():
+            return
+
+        self.log.info("Stopping MCP server")
+
+        instance = self.mcp_server_instance
+        supports_graceful = getattr(instance, "supports_graceful_stop", False) is True
+        if supports_graceful and isinstance(instance, MCPServer):
+            await instance.stop_server()
+            try:
+                await asyncio.wait_for(
+                    asyncio.shield(self.mcp_server_task),
+                    timeout=self.mcp_shutdown_timeout,
+                )
+                return
+            except TimeoutError:
+                self.log.warning("Timed out waiting for MCP server to stop")
+
+        self.mcp_server_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await self.mcp_server_task
+
     async def start_extension(self):
         """Start the extension - called after Jupyter Server starts."""
         try:
@@ -244,13 +269,9 @@ class MCPExtensionApp(ExtensionApp):
 
     async def stop_extension(self):
         """Stop the extension - called when Jupyter Server shuts down."""
-        if self.mcp_server_task and not self.mcp_server_task.done():
-            self.log.info("Stopping MCP server")
-            self.mcp_server_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self.mcp_server_task
-
-        # Always clean up
-        self.mcp_server_task = None
-        self.mcp_server_instance = None
+        try:
+            await self._stop_mcp_server_task()
+        finally:
+            self.mcp_server_task = None
+            self.mcp_server_instance = None
         self.log.info("MCP server stopped")
