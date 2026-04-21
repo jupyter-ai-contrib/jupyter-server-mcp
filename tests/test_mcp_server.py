@@ -292,13 +292,13 @@ class TestMCPServer:
             }
             return [(socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("::1", port, 0, 0))]
 
+        def fake_socket(family, socktype, proto):
+            return FailingSocket(family, socktype, proto)
+
         monkeypatch.setattr(
             "jupyter_server_mcp.mcp_server.socket.getaddrinfo", fake_getaddrinfo
         )
-        monkeypatch.setattr(
-            "jupyter_server_mcp.mcp_server.socket.socket",
-            lambda family, socktype, proto: FailingSocket(family, socktype, proto),
-        )
+        monkeypatch.setattr("jupyter_server_mcp.mcp_server.socket.socket", fake_socket)
 
         with pytest.raises(MCPServerPortError, match="Cannot start MCP server"):
             _ensure_port_available("localhost", 3001)
@@ -310,7 +310,9 @@ class TestMCPServer:
         class PartiallyFailingSocket(FakeSocket):
             def bind(self, sockaddr):
                 if self.family == socket.AF_INET6:
-                    raise OSError(errno.EADDRNOTAVAIL, "Cannot assign requested address")
+                    raise OSError(
+                        errno.EADDRNOTAVAIL, "Cannot assign requested address"
+                    )
                 super().bind(sockaddr)
 
         def fake_getaddrinfo(host, port, **kwargs):
@@ -336,9 +338,7 @@ class TestMCPServer:
 
         _ensure_port_available("localhost", 3001)
 
-        assert ("127.0.0.1", 3001) in {
-            sock.bound_address for sock in created_sockets
-        }
+        assert ("127.0.0.1", 3001) in {sock.bound_address for sock in created_sockets}
 
     @pytest.mark.asyncio
     async def test_start_server_checks_port_before_uvicorn(self, monkeypatch):
