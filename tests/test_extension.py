@@ -8,6 +8,11 @@ import pytest
 from jupyter_server_mcp.extension import MCPExtensionApp
 
 
+async def _run_until_cancelled():
+    """Keep mocked server tasks alive until the extension stops them."""
+    await asyncio.Future()
+
+
 class TestMCPExtensionApp:
     """Test MCPExtensionApp functionality."""
 
@@ -61,7 +66,7 @@ class TestMCPExtensionLifecycle:
         # Mock the MCP server creation to avoid actual server startup
         with patch("jupyter_server_mcp.extension.MCPServer") as mock_mcp_class:
             mock_server = Mock()
-            mock_server.start_server = AsyncMock()
+            mock_server.start_server = AsyncMock(side_effect=_run_until_cancelled)
             mock_server._registered_tools = []  # Use list instead of Mock
             mock_mcp_class.return_value = mock_server
 
@@ -79,6 +84,8 @@ class TestMCPExtensionLifecycle:
             assert extension.mcp_server_instance == mock_server
             assert extension.mcp_server_task is not None
 
+            await extension.stop_extension()
+
     @pytest.mark.asyncio
     async def test_start_extension_failure(self):
         """Test extension startup failure handling."""
@@ -90,6 +97,28 @@ class TestMCPExtensionLifecycle:
 
             with pytest.raises(Exception, match="Server creation failed"):
                 await extension.start_extension()
+
+            assert extension.mcp_server_instance is None
+            assert extension.mcp_server_task is None
+
+    @pytest.mark.asyncio
+    async def test_start_extension_detects_server_task_failure(self):
+        """Test startup failure from the background MCP server task."""
+        extension = MCPExtensionApp()
+
+        with patch("jupyter_server_mcp.extension.MCPServer") as mock_mcp_class:
+            mock_server = Mock()
+            mock_server.start_server = AsyncMock(
+                side_effect=RuntimeError("Port 3001 is already in use")
+            )
+            mock_server._registered_tools = []
+            mock_mcp_class.return_value = mock_server
+
+            with pytest.raises(RuntimeError, match="Port 3001 is already in use"):
+                await extension.start_extension()
+
+            assert extension.mcp_server_instance is None
+            assert extension.mcp_server_task is None
 
     @pytest.mark.asyncio
     async def test_stop_extension_with_running_server(self):
@@ -152,7 +181,7 @@ class TestMCPExtensionLifecycle:
         # Mock the MCP server
         with patch("jupyter_server_mcp.extension.MCPServer") as mock_mcp_class:
             mock_server = Mock()
-            mock_server.start_server = AsyncMock()
+            mock_server.start_server = AsyncMock(side_effect=_run_until_cancelled)
             mock_server._registered_tools = []  # Use list instead of Mock
             mock_mcp_class.return_value = mock_server
 
@@ -312,7 +341,7 @@ class TestExtensionWithTools:
 
         with patch("jupyter_server_mcp.extension.MCPServer") as mock_mcp_class:
             mock_server = Mock()
-            mock_server.start_server = AsyncMock()
+            mock_server.start_server = AsyncMock(side_effect=_run_until_cancelled)
             mock_server._registered_tools = {
                 "getcwd": {},
                 "sqrt": {},
@@ -329,6 +358,8 @@ class TestExtensionWithTools:
             # Verify tools were registered
             assert mock_server.register_tool.call_count == 2
 
+            await extension.stop_extension()
+
     @pytest.mark.asyncio
     async def test_start_extension_no_tools(self):
         """Test extension startup with no configured tools."""
@@ -338,7 +369,7 @@ class TestExtensionWithTools:
 
         with patch("jupyter_server_mcp.extension.MCPServer") as mock_mcp_class:
             mock_server = Mock()
-            mock_server.start_server = AsyncMock()
+            mock_server.start_server = AsyncMock(side_effect=_run_until_cancelled)
             mock_server._registered_tools = {}
             mock_mcp_class.return_value = mock_server
 
@@ -346,6 +377,8 @@ class TestExtensionWithTools:
 
             # Should not register any tools
             mock_server.register_tool.assert_not_called()
+
+            await extension.stop_extension()
 
 
 class TestEntrypointDiscovery:
@@ -432,7 +465,7 @@ class TestEntrypointDiscovery:
 
         with patch("jupyter_server_mcp.extension.MCPServer") as mock_mcp_class:
             mock_server = Mock()
-            mock_server.start_server = AsyncMock()
+            mock_server.start_server = AsyncMock(side_effect=_run_until_cancelled)
             mock_server._registered_tools = {"getcwd": {}, "dumps": {}}
             mock_mcp_class.return_value = mock_server
 
@@ -443,3 +476,5 @@ class TestEntrypointDiscovery:
 
                 # Should register both entrypoint (1) and configured (1) tools = 2 total
                 assert mock_server.register_tool.call_count == 2
+
+                await extension.stop_extension()

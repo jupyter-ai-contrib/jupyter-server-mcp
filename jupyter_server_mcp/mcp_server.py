@@ -3,6 +3,7 @@
 import inspect
 import json
 import logging
+import socket
 from collections.abc import Callable
 from functools import wraps
 from inspect import iscoroutinefunction, signature
@@ -13,6 +14,31 @@ from traitlets import Int, Unicode
 from traitlets.config.configurable import LoggingConfigurable
 
 logger = logging.getLogger(__name__)
+
+
+class MCPServerPortError(RuntimeError):
+    """Raised when the configured MCP server port cannot be bound."""
+
+
+def _ensure_port_available(host: str, port: int) -> None:
+    """Check whether Uvicorn will be able to bind to the configured address."""
+    if port == 0:
+        return
+
+    family = socket.AF_INET6 if host and ":" in host else socket.AF_INET
+
+    try:
+        with socket.socket(family, socket.SOCK_STREAM) as sock:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            sock.bind((host, port))
+    except OSError as exc:
+        msg = (
+            f"Cannot start MCP server on {host}:{port}: {exc.strerror or exc}. "
+            "Configure another MCP port with "
+            "c.MCPExtensionApp.mcp_port = <port> or "
+            "--MCPExtensionApp.mcp_port=<port>."
+        )
+        raise MCPServerPortError(msg) from exc
 
 
 def _is_dict_compatible_annotation(annotation) -> bool:
@@ -347,6 +373,7 @@ class MCPServer(LoggingConfigurable):
     async def start_server(self, host: str | None = None):
         """Start the MCP server on the specified host and port."""
         server_host = host or self.host
+        _ensure_port_available(server_host, self.port)
 
         self.log.info(f"Starting MCP server '{self.name}' on {server_host}:{self.port}")
         self.log.info(f"Registered tools: {list(self._registered_tools.keys())}")

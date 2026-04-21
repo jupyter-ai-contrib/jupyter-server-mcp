@@ -1,10 +1,15 @@
 """Test the simplified MCP server functionality."""
 
 import asyncio
+from unittest.mock import AsyncMock
 
 import pytest
 
-from jupyter_server_mcp.mcp_server import MCPServer, _wrap_with_json_conversion
+from jupyter_server_mcp.mcp_server import (
+    MCPServer,
+    MCPServerPortError,
+    _wrap_with_json_conversion,
+)
 
 
 def simple_function(x: int, y: int) -> int:
@@ -165,6 +170,44 @@ class TestMCPServer:
         assert info is not None
         assert info["name"] == "simple_function"
         assert info["function"] == simple_function
+
+    @pytest.mark.asyncio
+    async def test_start_server_checks_port_before_uvicorn(self, monkeypatch):
+        """Test that occupied ports fail before Uvicorn starts."""
+        server = MCPServer(port=3001)
+        server.mcp.run_http_async = AsyncMock()
+
+        def raise_port_error(host, port):
+            msg = f"Port {port} is already in use on {host}"
+            raise MCPServerPortError(msg)
+
+        monkeypatch.setattr(
+            "jupyter_server_mcp.mcp_server._ensure_port_available", raise_port_error
+        )
+
+        with pytest.raises(MCPServerPortError, match="Port 3001 is already in use"):
+            await server.start_server()
+
+        server.mcp.run_http_async.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_start_server_runs_http_after_port_check(self, monkeypatch):
+        """Test that startup continues when the configured port can be bound."""
+        checked_addresses = []
+        server = MCPServer(port=3050)
+        server.mcp.run_http_async = AsyncMock()
+
+        def record_port_check(host, port):
+            checked_addresses.append((host, port))
+
+        monkeypatch.setattr(
+            "jupyter_server_mcp.mcp_server._ensure_port_available", record_port_check
+        )
+
+        await server.start_server()
+
+        assert checked_addresses == [("localhost", 3050)]
+        server.mcp.run_http_async.assert_called_once_with(host="localhost", port=3050)
 
 
 class TestMCPServerDirect:

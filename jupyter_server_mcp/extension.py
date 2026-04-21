@@ -189,6 +189,17 @@ class MCPExtensionApp(ExtensionApp):
         """Initialize settings for the extension."""
         # Configuration is handled by traitlets
 
+    async def _confirm_mcp_server_started(self):
+        """Raise if the background MCP server task failed during startup."""
+        await asyncio.sleep(0.5)
+
+        if self.mcp_server_task is None or not self.mcp_server_task.done():
+            return
+
+        await self.mcp_server_task
+        msg = "MCP server exited during startup"
+        raise RuntimeError(msg)
+
     async def start_extension(self):
         """Start the extension - called after Jupyter Server starts."""
         try:
@@ -210,14 +221,20 @@ class MCPExtensionApp(ExtensionApp):
                 self.mcp_server_instance.start_server()
             )
 
-            # Give the server a moment to start
-            await asyncio.sleep(0.5)
+            await self._confirm_mcp_server_started()
 
             registered_count = len(self.mcp_server_instance._registered_tools)
             self.log.info(f"✅ MCP server started on port {self.mcp_port}")
             self.log.info(f"Total registered tools: {registered_count}")
 
         except Exception as e:
+            if self.mcp_server_task and not self.mcp_server_task.done():
+                self.mcp_server_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await self.mcp_server_task
+
+            self.mcp_server_task = None
+            self.mcp_server_instance = None
             self.log.error(f"Failed to start MCP server: {e}")
             raise
 
