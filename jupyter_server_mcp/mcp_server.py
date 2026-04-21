@@ -2,10 +2,13 @@
 
 import asyncio
 import contextlib
+import errno
 import inspect
 import json
 import logging
+import os
 import socket
+import sys
 from collections.abc import Callable
 from functools import wraps
 from inspect import iscoroutinefunction, signature
@@ -39,12 +42,36 @@ def _ensure_port_available(host: str, port: int) -> None:
     if port == 0:
         return
 
-    family = socket.AF_INET6 if host and ":" in host else socket.AF_INET
-
     try:
-        with socket.socket(family, socket.SOCK_STREAM) as sock:
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            sock.bind((host, port))
+        addr_infos = socket.getaddrinfo(
+            host or None,
+            port,
+            type=socket.SOCK_STREAM,
+            flags=socket.AI_PASSIVE,
+        )
+        reuse_address = os.name == "posix" and sys.platform != "cygwin"
+        checked_any_address = False
+        for family, socktype, proto, _canonname, sockaddr in set(addr_infos):
+            try:
+                sock = socket.socket(family, socktype, proto)
+            except OSError:
+                continue
+
+            try:
+                if reuse_address:
+                    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, True)
+                sock.bind(sockaddr)
+                checked_any_address = True
+            except OSError as exc:
+                if exc.errno == errno.EADDRNOTAVAIL:
+                    continue
+                raise
+            finally:
+                sock.close()
+
+        if not checked_any_address:
+            msg = f"could not bind on any address from {addr_infos}"
+            raise OSError(msg)
     except OSError as exc:
         msg = (
             f"Cannot start MCP server on {host}:{port}: {exc.strerror or exc}. "
