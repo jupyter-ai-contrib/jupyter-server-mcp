@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import importlib
 import importlib.metadata
+import inspect
 import logging
 
 from jupyter_server.extension.application import ExtensionApp
@@ -192,12 +193,17 @@ class MCPExtensionApp(ExtensionApp):
 
     async def _confirm_mcp_server_started(self):
         """Raise if the background MCP server task failed during startup."""
-        await asyncio.sleep(0.5)
-
-        if self.mcp_server_task is None or not self.mcp_server_task.done():
+        task = self.mcp_server_task
+        if task is None:
             return
 
-        await self.mcp_server_task
+        done, _ = await asyncio.wait(
+            {task}, timeout=0.5, return_when=asyncio.FIRST_COMPLETED
+        )
+        if not done:
+            return
+
+        await task
         msg = "MCP server exited during startup"
         raise RuntimeError(msg)
 
@@ -209,9 +215,9 @@ class MCPExtensionApp(ExtensionApp):
         self.log.info("Stopping MCP server")
 
         instance = self.mcp_server_instance
-        supports_graceful = getattr(instance, "supports_graceful_stop", False) is True
-        if supports_graceful and isinstance(instance, MCPServer):
-            await instance.stop_server()
+        stop_server = getattr(instance, "stop_server", None)
+        if inspect.iscoroutinefunction(stop_server):
+            await stop_server()
             try:
                 await asyncio.wait_for(
                     asyncio.shield(self.mcp_server_task),
