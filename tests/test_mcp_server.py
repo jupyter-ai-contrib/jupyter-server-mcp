@@ -41,10 +41,11 @@ class FakeSocket:
         self.socktype = socktype
         self.proto = proto
         self.bound_address = None
+        self.closed = False
         self.socket_options = []
 
     def close(self):
-        pass
+        self.closed = True
 
     def setsockopt(self, *args):
         self.socket_options.append(args)
@@ -249,6 +250,7 @@ class TestMCPServer:
 
         bound_addresses = {sock.bound_address for sock in created_sockets}
         assert bound_addresses == {("::1", 3001, 0, 0), ("127.0.0.1", 3001)}
+        assert all(sock.closed for sock in created_sockets)
 
     def test_port_check_does_not_force_reuseaddr_on_windows(self, monkeypatch):
         """Test that the preflight check mirrors asyncio's Windows bind policy."""
@@ -276,9 +278,11 @@ class TestMCPServer:
         _ensure_port_available("localhost", 3001)
 
         assert created_sockets[0].socket_options == []
+        assert created_sockets[0].closed is True
 
     def test_port_check_raises_when_resolved_address_is_in_use(self, monkeypatch):
         """Test that any in-use resolved address fails the preflight check."""
+        created_sockets = []
 
         class FailingSocket(FakeSocket):
             def bind(self, sockaddr):
@@ -293,7 +297,9 @@ class TestMCPServer:
             return [(socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("::1", port, 0, 0))]
 
         def fake_socket(family, socktype, proto):
-            return FailingSocket(family, socktype, proto)
+            sock = FailingSocket(family, socktype, proto)
+            created_sockets.append(sock)
+            return sock
 
         monkeypatch.setattr(
             "jupyter_server_mcp.mcp_server.socket.getaddrinfo", fake_getaddrinfo
@@ -302,6 +308,8 @@ class TestMCPServer:
 
         with pytest.raises(MCPServerPortError, match="Cannot start MCP server"):
             _ensure_port_available("localhost", 3001)
+
+        assert all(sock.closed for sock in created_sockets)
 
     def test_port_check_ignores_unavailable_resolved_addresses(self, monkeypatch):
         """Test that unusable address families do not fail if another bind works."""
@@ -339,6 +347,7 @@ class TestMCPServer:
         _ensure_port_available("localhost", 3001)
 
         assert ("127.0.0.1", 3001) in {sock.bound_address for sock in created_sockets}
+        assert all(sock.closed for sock in created_sockets)
 
     @pytest.mark.asyncio
     async def test_start_server_checks_port_before_uvicorn(self, monkeypatch):
