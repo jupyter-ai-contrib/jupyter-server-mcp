@@ -60,7 +60,9 @@ c = get_config()
 # Basic MCP server settings
 c.MCPExtensionApp.mcp_name = "My Jupyter MCP Server"
 
-# Optional: override the default MCP port (3001)
+# Optional: override the default MCP port (3001).
+# If 3001 is already in use, choose another fixed port and use the same
+# port in your MCP client configuration below.
 # c.MCPExtensionApp.mcp_port = 8080
 
 # Register tools from existing packages
@@ -87,6 +89,9 @@ jupyter lab --config=jupyter_config.py
 ```
 
 The MCP server will start automatically on `http://localhost:3001/mcp` by default.
+If the configured port is already in use, startup fails with a clear error instead
+of silently choosing another port, because MCP clients need to be configured with
+the actual endpoint URL.
 
 Any trait can also be set directly on the command line, without a config file. For example, to override the port:
 
@@ -293,6 +298,7 @@ c.MCPExtensionApp.use_tool_discovery = False
 c = get_config()
 
 # Optional: override the default port (3001)
+# Use a fixed port that matches your MCP client configuration.
 # c.MCPExtensionApp.mcp_port = 8080
 ```
 

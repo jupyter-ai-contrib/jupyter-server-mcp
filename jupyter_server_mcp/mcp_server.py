@@ -1,18 +1,87 @@
 """Simple MCP server for registering Python functions as tools."""
 
+import asyncio
+import contextlib
+import errno
 import inspect
 import json
 import logging
+import os
+import socket
+import sys
 from collections.abc import Callable
 from functools import wraps
 from inspect import iscoroutinefunction, signature
 from typing import Any, Union, get_args, get_origin
 
+import uvicorn
 from fastmcp import FastMCP
+from fastmcp import settings as fastmcp_settings
+from fastmcp.utilities.cli import log_server_banner
 from traitlets import Int, Unicode
 from traitlets.config.configurable import LoggingConfigurable
 
 logger = logging.getLogger(__name__)
+
+
+class MCPServerPortError(RuntimeError):
+    """Raised when the configured MCP server port cannot be bound."""
+
+
+class _EmbeddedUvicornServer(uvicorn.Server):
+    """Uvicorn server variant that leaves process signals to Jupyter Server."""
+
+    @contextlib.contextmanager
+    def capture_signals(self):
+        """Do not install SIGINT/SIGTERM handlers for embedded servers."""
+        yield
+
+
+def _ensure_port_available(host: str, port: int) -> None:
+    """Check whether Uvicorn will be able to bind to the configured address."""
+    if port == 0:
+        return
+
+    try:
+        addr_infos = socket.getaddrinfo(
+            host or None,
+            port,
+            type=socket.SOCK_STREAM,
+            flags=socket.AI_PASSIVE,
+        )
+        reuse_address = os.name == "posix" and sys.platform != "cygwin"
+        checked_any_address = False
+        for family, socktype, proto, _canonname, sockaddr in set(addr_infos):
+            try:
+                sock = socket.socket(family, socktype, proto)
+            except OSError:
+                continue
+
+            try:
+                if reuse_address:
+                    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, True)
+                if family == socket.AF_INET6 and hasattr(socket, "IPPROTO_IPV6"):
+                    sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, True)
+                sock.bind(sockaddr)
+                checked_any_address = True
+            except OSError as exc:
+                if exc.errno == errno.EADDRNOTAVAIL:
+                    continue
+                raise
+            finally:
+                sock.close()
+
+        if not checked_any_address:
+            msg = f"could not bind on any address from {addr_infos}"
+            raise OSError(msg)
+    except OSError as exc:
+        msg = (
+            f"Cannot start MCP server on {host}:{port}: {exc.strerror or exc}. "
+            "Configure another MCP port with "
+            "c.MCPExtensionApp.mcp_port = <port> or "
+            "--MCPExtensionApp.mcp_port=<port>."
+        )
+        raise MCPServerPortError(msg) from exc
 
 
 def _is_dict_compatible_annotation(annotation) -> bool:
@@ -166,81 +235,6 @@ def _wrap_with_json_conversion(func: Callable) -> Callable:
     return sync_wrapper
 
 
-def _update_schema_for_json_args(func: Callable, tool) -> None:
-    """
-    Modify the tool's JSON schema to accept strings for dict parameters.
-
-    This function updates the input schema to allow JSON strings in addition to objects for
-    parameters that are annotated as dict types, enabling MCP clients to pass JSON strings
-    that will be automatically converted to dicts.
-
-    This modification is always applied to ensure compatibility with various MCP clients.
-
-    Args:
-        func: The original function
-        tool: The FastMCP tool object
-    """
-    try:
-        sig = signature(func)
-
-        # Get the MCP tool representation to modify its schema
-        mcp_tool_dict = tool.to_mcp_tool().model_dump()
-        input_schema = mcp_tool_dict.get("inputSchema", {})
-        properties = input_schema.get("properties", {})
-
-        # Check each parameter in the function signature
-        for param_name, param in sig.parameters.items():
-            if param_name in properties:
-                param_schema = properties[param_name]
-
-                # Check if this parameter should support JSON string conversion
-                annotation = param.annotation
-                should_support_string = _is_dict_compatible_annotation(annotation)
-
-                if should_support_string:
-                    # Modify the schema to also accept strings
-                    if "anyOf" in param_schema:
-                        # For Optional[dict] - add string to the anyOf list
-                        existing_schemas = param_schema["anyOf"]
-                        # Check if string is already in the schema
-                        has_string = any(
-                            s.get("type") == "string" for s in existing_schemas
-                        )
-                        if not has_string:
-                            existing_schemas.append(
-                                {
-                                    "type": "string",
-                                    "description": "JSON string that will be parsed to object",
-                                }
-                            )
-                    elif param_schema.get("type") == "object":
-                        # For dict - convert to anyOf with object and string
-                        original_schema = param_schema.copy()
-                        properties[param_name] = {
-                            "anyOf": [
-                                original_schema,
-                                {
-                                    "type": "string",
-                                    "description": "JSON string that will be parsed to object",
-                                },
-                            ],
-                            "title": param_schema.get("title", param_name.title()),
-                        }
-                        # Preserve default if it exists
-                        if "default" in param_schema:
-                            properties[param_name]["default"] = param_schema["default"]
-
-        # Update the tool's parameters with the modified schema
-        tool.parameters = input_schema
-
-        logger.debug(
-            f"Modified schema for tool '{tool.name}' to support JSON strings for dict parameters"
-        )
-
-    except Exception as e:
-        logger.warning(f"Could not modify schema for JSON string support: {e}")
-
-
 class MCPServer(LoggingConfigurable):
     """Simple MCP server that allows registering Python functions as tools."""
 
@@ -268,6 +262,7 @@ class MCPServer(LoggingConfigurable):
         # Initialize FastMCP and tools registry
         self.mcp = FastMCP(self.name)
         self._registered_tools = {}
+        self._uvicorn_server: uvicorn.Server | None = None
         self.log.info(
             f"Initialized MCP server '{self.name}' on {self.host}:{self.port}"
         )
@@ -299,15 +294,7 @@ class MCPServer(LoggingConfigurable):
         registered_func = _wrap_with_json_conversion(func)
         self.log.debug(f"Applied JSON argument auto-conversion wrapper to {tool_name}")
 
-        # Register with FastMCP
-        tool = self.mcp.tool(registered_func)
-
-        # Modify schema to support JSON strings for dict parameters
-        if tool:
-            _update_schema_for_json_args(func, tool)
-            self.log.debug(
-                f"Modified schema for tool '{tool_name}' to accept JSON strings for dict parameters"
-            )
+        self.mcp.tool(registered_func)
 
         # Keep track for listing
         self._registered_tools[tool_name] = {
@@ -344,13 +331,52 @@ class MCPServer(LoggingConfigurable):
         """Get information about a specific tool."""
         return self._registered_tools.get(tool_name)
 
+    async def _run_http_async_without_signals(self, host: str, port: int) -> None:
+        """Run FastMCP over HTTP without taking over process signal handlers."""
+        transport = "http"
+        app = self.mcp.http_app(transport=transport)
+
+        log_server_banner(server=self.mcp)
+
+        config = uvicorn.Config(
+            app,
+            host=host,
+            port=port,
+            timeout_graceful_shutdown=2,
+            lifespan="on",
+            ws="websockets-sansio",
+            log_level=fastmcp_settings.log_level.lower(),
+        )
+        server = _EmbeddedUvicornServer(config)
+        self._uvicorn_server = server
+        path = getattr(app.state, "path", "").lstrip("/")
+        self.log.info(
+            f"Starting MCP server {self.name!r} with transport "
+            f"{transport!r} on http://{host}:{port}/{path}"
+        )
+
+        try:
+            await server.serve()
+        except asyncio.CancelledError:
+            server.should_exit = True
+            if getattr(server, "started", False):
+                with contextlib.suppress(Exception, asyncio.CancelledError):
+                    await server.shutdown()
+            raise
+        finally:
+            if self._uvicorn_server is server:
+                self._uvicorn_server = None
+
+    async def stop_server(self) -> None:
+        """Request a graceful MCP HTTP server shutdown."""
+        if self._uvicorn_server is not None:
+            self._uvicorn_server.should_exit = True
+
     async def start_server(self, host: str | None = None):
         """Start the MCP server on the specified host and port."""
         server_host = host or self.host
+        _ensure_port_available(server_host, self.port)
 
-        self.log.info(f"Starting MCP server '{self.name}' on {server_host}:{self.port}")
         self.log.info(f"Registered tools: {list(self._registered_tools.keys())}")
-        self.log.debug(f"Server configuration - Host: {server_host}, Port: {self.port}")
 
-        # Start FastMCP server with HTTP transport
-        await self.mcp.run_http_async(host=server_host, port=self.port)
+        await self._run_http_async_without_signals(host=server_host, port=self.port)

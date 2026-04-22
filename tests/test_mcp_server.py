@@ -1,10 +1,21 @@
 """Test the simplified MCP server functionality."""
 
 import asyncio
+import errno
+import signal
+import socket
+from unittest.mock import AsyncMock
 
 import pytest
+import uvicorn
 
-from jupyter_server_mcp.mcp_server import MCPServer, _wrap_with_json_conversion
+from jupyter_server_mcp.mcp_server import (
+    MCPServer,
+    MCPServerPortError,
+    _EmbeddedUvicornServer,
+    _ensure_port_available,
+    _wrap_with_json_conversion,
+)
 
 
 def simple_function(x: int, y: int) -> int:
@@ -16,6 +27,31 @@ async def async_function(name: str) -> str:
     """Async greeting function."""
     await asyncio.sleep(0.001)  # Small delay
     return f"Hello, {name}!"
+
+
+async def empty_asgi_app(_scope, _receive, _send) -> None:
+    """Minimal ASGI app for Uvicorn server unit tests."""
+
+
+class FakeSocket:
+    """Minimal socket test double."""
+
+    def __init__(self, family, socktype, proto):
+        self.family = family
+        self.socktype = socktype
+        self.proto = proto
+        self.bound_address = None
+        self.closed = False
+        self.socket_options = []
+
+    def close(self):
+        self.closed = True
+
+    def setsockopt(self, *args):
+        self.socket_options.append(args)
+
+    def bind(self, sockaddr):
+        self.bound_address = sockaddr
 
 
 def function_with_docstring(message: str) -> str:
@@ -165,6 +201,205 @@ class TestMCPServer:
         assert info is not None
         assert info["name"] == "simple_function"
         assert info["function"] == simple_function
+
+    def test_embedded_uvicorn_server_does_not_capture_signals(self, monkeypatch):
+        """Test that embedded Uvicorn leaves Ctrl-C handling to Jupyter."""
+        captured_signals = []
+
+        def record_signal(sig, handler):
+            captured_signals.append((sig, handler))
+
+        monkeypatch.setattr(signal, "signal", record_signal)
+
+        uvicorn_server = _EmbeddedUvicornServer(
+            config=uvicorn.Config(app=empty_asgi_app)
+        )
+
+        with uvicorn_server.capture_signals():
+            pass
+
+        assert captured_signals == []
+
+    def test_port_check_uses_all_resolved_addresses(self, monkeypatch):
+        """Test that localhost-style hosts are checked for IPv6 and IPv4 binds."""
+        addr_infos = [
+            (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("::1", 3001, 0, 0)),
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 3001)),
+        ]
+        created_sockets = []
+
+        def fake_getaddrinfo(host, port, **kwargs):
+            assert (host, port) == ("localhost", 3001)
+            assert kwargs == {
+                "type": socket.SOCK_STREAM,
+                "flags": socket.AI_PASSIVE,
+            }
+            return addr_infos
+
+        def fake_socket(family, socktype, proto):
+            sock = FakeSocket(family, socktype, proto)
+            created_sockets.append(sock)
+            return sock
+
+        monkeypatch.setattr(
+            "jupyter_server_mcp.mcp_server.socket.getaddrinfo", fake_getaddrinfo
+        )
+        monkeypatch.setattr("jupyter_server_mcp.mcp_server.socket.socket", fake_socket)
+
+        _ensure_port_available("localhost", 3001)
+
+        bound_addresses = {sock.bound_address for sock in created_sockets}
+        assert bound_addresses == {("::1", 3001, 0, 0), ("127.0.0.1", 3001)}
+        assert all(sock.closed for sock in created_sockets)
+
+    def test_port_check_does_not_force_reuseaddr_on_windows(self, monkeypatch):
+        """Test that the preflight check mirrors asyncio's Windows bind policy."""
+        created_sockets = []
+
+        def fake_getaddrinfo(host, port, **kwargs):
+            assert kwargs == {
+                "type": socket.SOCK_STREAM,
+                "flags": socket.AI_PASSIVE,
+            }
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (host, port))]
+
+        def fake_socket(family, socktype, proto):
+            sock = FakeSocket(family, socktype, proto)
+            created_sockets.append(sock)
+            return sock
+
+        monkeypatch.setattr("jupyter_server_mcp.mcp_server.os.name", "nt")
+        monkeypatch.setattr("jupyter_server_mcp.mcp_server.sys.platform", "win32")
+        monkeypatch.setattr(
+            "jupyter_server_mcp.mcp_server.socket.getaddrinfo", fake_getaddrinfo
+        )
+        monkeypatch.setattr("jupyter_server_mcp.mcp_server.socket.socket", fake_socket)
+
+        _ensure_port_available("localhost", 3001)
+
+        assert created_sockets[0].socket_options == []
+        assert created_sockets[0].closed is True
+
+    def test_port_check_raises_when_resolved_address_is_in_use(self, monkeypatch):
+        """Test that any in-use resolved address fails the preflight check."""
+        created_sockets = []
+
+        class FailingSocket(FakeSocket):
+            def bind(self, sockaddr):
+                raise OSError(errno.EADDRINUSE, f"Address already in use: {sockaddr}")
+
+        def fake_getaddrinfo(host, port, **kwargs):
+            assert host == "localhost"
+            assert kwargs == {
+                "type": socket.SOCK_STREAM,
+                "flags": socket.AI_PASSIVE,
+            }
+            return [(socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("::1", port, 0, 0))]
+
+        def fake_socket(family, socktype, proto):
+            sock = FailingSocket(family, socktype, proto)
+            created_sockets.append(sock)
+            return sock
+
+        monkeypatch.setattr(
+            "jupyter_server_mcp.mcp_server.socket.getaddrinfo", fake_getaddrinfo
+        )
+        monkeypatch.setattr("jupyter_server_mcp.mcp_server.socket.socket", fake_socket)
+
+        with pytest.raises(MCPServerPortError, match="Cannot start MCP server"):
+            _ensure_port_available("localhost", 3001)
+
+        assert all(sock.closed for sock in created_sockets)
+
+    def test_port_check_ignores_unavailable_resolved_addresses(self, monkeypatch):
+        """Test that unusable address families do not fail if another bind works."""
+        created_sockets = []
+
+        class PartiallyFailingSocket(FakeSocket):
+            def bind(self, sockaddr):
+                if self.family == socket.AF_INET6:
+                    raise OSError(
+                        errno.EADDRNOTAVAIL, "Cannot assign requested address"
+                    )
+                super().bind(sockaddr)
+
+        def fake_getaddrinfo(host, port, **kwargs):
+            assert host == "localhost"
+            assert kwargs == {
+                "type": socket.SOCK_STREAM,
+                "flags": socket.AI_PASSIVE,
+            }
+            return [
+                (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("::1", port, 0, 0)),
+                (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", port)),
+            ]
+
+        def fake_socket(family, socktype, proto):
+            sock = PartiallyFailingSocket(family, socktype, proto)
+            created_sockets.append(sock)
+            return sock
+
+        monkeypatch.setattr(
+            "jupyter_server_mcp.mcp_server.socket.getaddrinfo", fake_getaddrinfo
+        )
+        monkeypatch.setattr("jupyter_server_mcp.mcp_server.socket.socket", fake_socket)
+
+        _ensure_port_available("localhost", 3001)
+
+        assert ("127.0.0.1", 3001) in {sock.bound_address for sock in created_sockets}
+        assert all(sock.closed for sock in created_sockets)
+
+    @pytest.mark.asyncio
+    async def test_start_server_checks_port_before_uvicorn(self, monkeypatch):
+        """Test that occupied ports fail before Uvicorn starts."""
+        server = MCPServer(port=3001)
+        server._run_http_async_without_signals = AsyncMock()
+
+        def raise_port_error(host, port):
+            msg = f"Port {port} is already in use on {host}"
+            raise MCPServerPortError(msg)
+
+        monkeypatch.setattr(
+            "jupyter_server_mcp.mcp_server._ensure_port_available", raise_port_error
+        )
+
+        with pytest.raises(MCPServerPortError, match="Port 3001 is already in use"):
+            await server.start_server()
+
+        server._run_http_async_without_signals.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_start_server_runs_http_after_port_check(self, monkeypatch):
+        """Test that startup continues when the configured port can be bound."""
+        checked_addresses = []
+        server = MCPServer(port=3050)
+        server._run_http_async_without_signals = AsyncMock()
+
+        def record_port_check(host, port):
+            checked_addresses.append((host, port))
+
+        monkeypatch.setattr(
+            "jupyter_server_mcp.mcp_server._ensure_port_available", record_port_check
+        )
+
+        await server.start_server()
+
+        assert checked_addresses == [("localhost", 3050)]
+        server._run_http_async_without_signals.assert_called_once_with(
+            host="localhost", port=3050
+        )
+
+    @pytest.mark.asyncio
+    async def test_stop_server_requests_uvicorn_exit(self):
+        """Test that graceful shutdown asks the embedded Uvicorn server to exit."""
+        server = MCPServer()
+        server._uvicorn_server = _EmbeddedUvicornServer(
+            config=uvicorn.Config(app=empty_asgi_app)
+        )
+
+        await server.stop_server()
+
+        assert server._uvicorn_server.should_exit is True
 
 
 class TestMCPServerDirect:

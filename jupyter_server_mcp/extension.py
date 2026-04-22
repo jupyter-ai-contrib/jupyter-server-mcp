@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import importlib
 import importlib.metadata
+import inspect
 import logging
 
 from jupyter_server.extension.application import ExtensionApp
@@ -49,6 +50,7 @@ class MCPExtensionApp(ExtensionApp):
 
     mcp_server_instance: object | None = None
     mcp_server_task: asyncio.Task | None = None
+    mcp_shutdown_timeout = 5
 
     def _load_function_from_string(self, tool_spec: str):
         """Load a function from a string specification.
@@ -189,6 +191,46 @@ class MCPExtensionApp(ExtensionApp):
         """Initialize settings for the extension."""
         # Configuration is handled by traitlets
 
+    async def _confirm_mcp_server_started(self):
+        """Raise if the background MCP server task failed during startup."""
+        task = self.mcp_server_task
+        if task is None:
+            return
+
+        done, _ = await asyncio.wait(
+            {task}, timeout=0.5, return_when=asyncio.FIRST_COMPLETED
+        )
+        if not done:
+            return
+
+        await task
+        msg = "MCP server exited during startup"
+        raise RuntimeError(msg)
+
+    async def _stop_mcp_server_task(self):
+        """Stop the MCP server through its own shutdown path, then fall back."""
+        if self.mcp_server_task is None or self.mcp_server_task.done():
+            return
+
+        self.log.info("Stopping MCP server")
+
+        instance = self.mcp_server_instance
+        stop_server = getattr(instance, "stop_server", None)
+        if inspect.iscoroutinefunction(stop_server):
+            await stop_server()
+            try:
+                await asyncio.wait_for(
+                    asyncio.shield(self.mcp_server_task),
+                    timeout=self.mcp_shutdown_timeout,
+                )
+                return
+            except TimeoutError:
+                self.log.warning("Timed out waiting for MCP server to stop")
+
+        self.mcp_server_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await self.mcp_server_task
+
     async def start_extension(self):
         """Start the extension - called after Jupyter Server starts."""
         try:
@@ -210,14 +252,20 @@ class MCPExtensionApp(ExtensionApp):
                 self.mcp_server_instance.start_server()
             )
 
-            # Give the server a moment to start
-            await asyncio.sleep(0.5)
+            await self._confirm_mcp_server_started()
 
             registered_count = len(self.mcp_server_instance._registered_tools)
             self.log.info(f"✅ MCP server started on port {self.mcp_port}")
             self.log.info(f"Total registered tools: {registered_count}")
 
         except Exception as e:
+            if self.mcp_server_task and not self.mcp_server_task.done():
+                self.mcp_server_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await self.mcp_server_task
+
+            self.mcp_server_task = None
+            self.mcp_server_instance = None
             self.log.error(f"Failed to start MCP server: {e}")
             raise
 
@@ -227,13 +275,9 @@ class MCPExtensionApp(ExtensionApp):
 
     async def stop_extension(self):
         """Stop the extension - called when Jupyter Server shuts down."""
-        if self.mcp_server_task and not self.mcp_server_task.done():
-            self.log.info("Stopping MCP server")
-            self.mcp_server_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self.mcp_server_task
-
-        # Always clean up
-        self.mcp_server_task = None
-        self.mcp_server_instance = None
+        try:
+            await self._stop_mcp_server_task()
+        finally:
+            self.mcp_server_task = None
+            self.mcp_server_instance = None
         self.log.info("MCP server stopped")
