@@ -2,6 +2,34 @@
 
 <!-- <START NEW CHANGELOG ENTRY> -->
 
+## 0.2.0
+
+([Full Changelog](https://github.com/jupyter-ai-contrib/jupyter-server-mcp/compare/v0.1.2...7ad774e1ee656fd09a6c2cec3a8cd2d39fedc63c))
+
+### Enhancements made
+
+- Improve handling of the MCP server port and shutdown behavior [#17](https://github.com/jupyter-ai-contrib/jupyter-server-mcp/pull/17) ([@jtpio](https://github.com/jtpio), [@Zsailer](https://github.com/Zsailer))
+
+### Maintenance and upkeep improvements
+
+- Fix Python versions used on CI and trove classifiers [#20](https://github.com/jupyter-ai-contrib/jupyter-server-mcp/pull/20) ([@jtpio](https://github.com/jtpio))
+
+### Documentation improvements
+
+- Add PyPI and conda-forge badges, update instructions [#15](https://github.com/jupyter-ai-contrib/jupyter-server-mcp/pull/15) ([@jtpio](https://github.com/jtpio))
+- Update list of clients in the README [#14](https://github.com/jupyter-ai-contrib/jupyter-server-mcp/pull/14) ([@jtpio](https://github.com/jtpio))
+
+### Contributors to this release
+
+The following people contributed discussions, new ideas, code and documentation contributions, and review.
+See [our definition of contributors](https://github-activity.readthedocs.io/en/latest/use/#how-does-this-tool-define-contributions-in-the-reports).
+
+([GitHub contributors page for this release](https://github.com/jupyter-ai-contrib/jupyter-server-mcp/graphs/contributors?from=2025-10-24&to=2026-04-22&type=c))
+
+@jtpio ([activity](https://github.com/search?q=repo%3Ajupyter-ai-contrib%2Fjupyter-server-mcp+involves%3Ajtpio+updated%3A2025-10-24..2026-04-22&type=Issues)) | @Zsailer ([activity](https://github.com/search?q=repo%3Ajupyter-ai-contrib%2Fjupyter-server-mcp+involves%3AZsailer+updated%3A2025-10-24..2026-04-22&type=Issues))
+
+<!-- <END NEW CHANGELOG ENTRY> -->
+
 ## 0.1.2
 
 ([Full Changelog](https://github.com/jupyter-ai-contrib/jupyter-server-mcp/compare/v0.1.1...754ead215d3a9bb6e46f9e8d874bb9911caec3eb))
@@ -21,8 +49,6 @@
 ([GitHub contributors page for this release](https://github.com/jupyter-ai-contrib/jupyter-server-mcp/graphs/contributors?from=2025-09-11&to=2025-10-24&type=c))
 
 [@jtpio](https://github.com/search?q=repo%3Ajupyter-ai-contrib%2Fjupyter-server-mcp+involves%3Ajtpio+updated%3A2025-09-11..2025-10-24&type=Issues) | [@Zsailer](https://github.com/search?q=repo%3Ajupyter-ai-contrib%2Fjupyter-server-mcp+involves%3AZsailer+updated%3A2025-09-11..2025-10-24&type=Issues)
-
-<!-- <END NEW CHANGELOG ENTRY> -->
 
 ## 0.1.1
 
