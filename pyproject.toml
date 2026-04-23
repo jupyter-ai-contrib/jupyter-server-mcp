@@ -23,7 +23,7 @@ classifiers = [
 
 dependencies = [
     "jupyter_server>=1.6,<3",
-    "fastmcp>=3.2.4"
+    "fastmcp>=3"
 ]
 
 [project.optional-dependencies]
