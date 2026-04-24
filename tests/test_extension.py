@@ -1,12 +1,30 @@
 """Test Jupyter Server extension functionality."""
 
 import asyncio
+import importlib.metadata as importlib_metadata
+import json
+import os
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
-from jupyter_server_mcp.extension import MCPExtensionApp
+from jupyter_server_mcp import proxy, runtime
+from jupyter_server_mcp.extension import MCPExtensionApp, _connect_host
 from jupyter_server_mcp.mcp_server import MCPServer
+
+
+@pytest.fixture(autouse=True)
+def _isolated_jupyter_runtime_dir(tmp_path_factory, monkeypatch):
+    """Ensure tests never write MCP info files to the real runtime directory.
+
+    Individual tests may still override this by monkey-patching again or by
+    installing their own ``runtime_dir`` fixture.
+    """
+    fake_dir = tmp_path_factory.mktemp("jupyter_runtime_dir")
+    monkeypatch.setattr(
+        "jupyter_server_mcp.extension.jupyter_runtime_dir",
+        lambda: str(fake_dir),
+    )
 
 
 async def _run_until_cancelled():
@@ -14,11 +32,16 @@ async def _run_until_cancelled():
     await asyncio.Future()
 
 
-def _mock_running_server(registered_tools=None):
+def _mock_running_server(registered_tools=None, host="localhost", port=3001):
     """Create an MCP server mock whose start task stays alive."""
     mock_server = Mock()
     mock_server.start_server = AsyncMock(side_effect=_run_until_cancelled)
+    # Mimic the real MCPServer: wait_until_bound resolves immediately so the
+    # extension's startup confirmation completes without touching uvicorn.
+    mock_server.wait_until_bound = AsyncMock(return_value=None)
     mock_server._registered_tools = [] if registered_tools is None else registered_tools
+    mock_server.host = host
+    mock_server.port = port
     return mock_server
 
 
@@ -120,6 +143,9 @@ class TestMCPExtensionLifecycle:
             mock_server.start_server = AsyncMock(
                 side_effect=RuntimeError("Port 3001 is already in use")
             )
+            # If start_server raises, the task should finish first; the bound
+            # waiter should never resolve on its own.
+            mock_server.wait_until_bound = AsyncMock(side_effect=_run_until_cancelled)
             mock_server._registered_tools = []
             mock_mcp_class.return_value = mock_server
 
@@ -374,6 +400,8 @@ class TestExtensionWithTools:
         extension.mcp_port = 3089
         extension.mcp_name = "Test Server With Tools"
         extension.mcp_tools = ["os:getcwd", "math:sqrt"]
+        # Isolate this test from any real entrypoints installed in the env.
+        extension.use_tool_discovery = False
 
         with patch("jupyter_server_mcp.extension.MCPServer") as mock_mcp_class:
             mock_server = _mock_running_server({"getcwd": {}, "sqrt": {}})
@@ -399,6 +427,7 @@ class TestExtensionWithTools:
         extension = MCPExtensionApp()
         extension.mcp_port = 3088
         extension.mcp_tools = []
+        extension.use_tool_discovery = False
 
         with patch("jupyter_server_mcp.extension.MCPServer") as mock_mcp_class:
             mock_server = _mock_running_server({})
@@ -511,3 +540,273 @@ class TestEntrypointDiscovery:
                 extension._confirm_mcp_server_started.assert_awaited_once()
 
                 await extension.stop_extension()
+
+
+class TestRuntimeInfoPublishing:
+    """Test the runtime info file produced by the extension."""
+
+    @pytest.fixture
+    def runtime_dir(self, tmp_path, monkeypatch):
+        """Redirect ``jupyter_runtime_dir`` so tests do not touch the user's dir."""
+        monkeypatch.setattr(
+            "jupyter_server_mcp.extension.jupyter_runtime_dir",
+            lambda: str(tmp_path),
+        )
+        return tmp_path
+
+    @pytest.mark.asyncio
+    async def test_info_file_written_on_startup_and_removed_on_stop(self, runtime_dir):
+        """Startup writes the info file; shutdown removes it."""
+        extension = MCPExtensionApp()
+        extension.mcp_port = 3080
+        extension.mcp_name = "Startup Test"
+
+        with patch("jupyter_server_mcp.extension.MCPServer") as mock_mcp_class:
+            mock_server = _mock_running_server(port=3080)
+            mock_mcp_class.return_value = mock_server
+            extension._confirm_mcp_server_started = AsyncMock()
+
+            await extension.start_extension()
+
+            info_path = runtime.info_file_path(runtime_dir, os.getpid())
+            assert info_path.exists(), "info file should be written on startup"
+
+            data = json.loads(info_path.read_text())
+            assert data["pid"] == os.getpid()
+            assert data["port"] == 3080
+            assert data["url"] == "http://localhost:3080/mcp"
+            assert data["name"] == "Startup Test"
+            assert data["root_dir"]  # populated from serverapp or cwd
+
+            await extension.stop_extension()
+
+            assert not info_path.exists(), "info file should be removed on stop"
+
+    @pytest.mark.asyncio
+    async def test_info_file_cleaned_up_on_startup_failure(self, runtime_dir):
+        """When startup fails after the info file is written, clean it up."""
+        extension = MCPExtensionApp()
+        extension.mcp_port = 3081
+
+        with patch("jupyter_server_mcp.extension.MCPServer") as mock_mcp_class:
+            mock_server = _mock_running_server(port=3081)
+            mock_mcp_class.return_value = mock_server
+            extension._confirm_mcp_server_started = AsyncMock()
+
+            # Force a failure after the info file would be written.
+            with (
+                patch.object(
+                    extension,
+                    "_publish_runtime_info",
+                    side_effect=RuntimeError("boom"),
+                ),
+                pytest.raises(RuntimeError, match="boom"),
+            ):
+                await extension.start_extension()
+
+        info_path = runtime.info_file_path(runtime_dir, os.getpid())
+        assert not info_path.exists()
+        assert extension.mcp_server_instance is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.usefixtures("runtime_dir")
+    async def test_info_file_publish_is_non_fatal_on_error(self):
+        """If publishing fails, the extension should still start."""
+        extension = MCPExtensionApp()
+        extension.mcp_port = 3082
+
+        with patch("jupyter_server_mcp.extension.MCPServer") as mock_mcp_class:
+            mock_server = _mock_running_server(port=3082)
+            mock_mcp_class.return_value = mock_server
+            extension._confirm_mcp_server_started = AsyncMock()
+
+            with patch(
+                "jupyter_server_mcp.extension.write_info_file",
+                side_effect=OSError("disk full"),
+            ):
+                await extension.start_extension()
+
+            assert extension.mcp_server_instance is mock_server
+            assert extension._runtime_info_path is None
+
+            await extension.stop_extension()
+
+    @pytest.mark.asyncio
+    async def test_info_file_uses_serverapp_root_dir_when_available(self, runtime_dir):
+        """When a serverapp exposes root_dir, it should be recorded verbatim."""
+        extension = MCPExtensionApp()
+        extension.mcp_port = 3083
+        extension.serverapp = Mock(root_dir=str(runtime_dir))
+
+        with patch("jupyter_server_mcp.extension.MCPServer") as mock_mcp_class:
+            mock_server = _mock_running_server(port=3083)
+            mock_mcp_class.return_value = mock_server
+            extension._confirm_mcp_server_started = AsyncMock()
+
+            await extension.start_extension()
+
+            info_path = runtime.info_file_path(runtime_dir, os.getpid())
+            data = json.loads(info_path.read_text())
+            assert data["root_dir"] == str(runtime_dir.resolve())
+
+            await extension.stop_extension()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("bind_host", "expected_connect_host"),
+        [
+            ("0.0.0.0", "127.0.0.1"),
+            ("::", "::1"),
+            ("localhost", "localhost"),
+        ],
+    )
+    async def test_info_file_url_rewrites_wildcard_hosts(
+        self, runtime_dir, bind_host, expected_connect_host
+    ):
+        """Wildcard bind hosts must be replaced with a dialable loopback in the URL."""
+        extension = MCPExtensionApp()
+        extension.mcp_port = 3084
+
+        with patch("jupyter_server_mcp.extension.MCPServer") as mock_mcp_class:
+            mock_server = _mock_running_server(host=bind_host, port=3084)
+            mock_mcp_class.return_value = mock_server
+            extension._confirm_mcp_server_started = AsyncMock()
+
+            await extension.start_extension()
+
+            info_path = runtime.info_file_path(runtime_dir, os.getpid())
+            data = json.loads(info_path.read_text())
+            assert data["host"] == bind_host
+            assert data["url"] == f"http://{expected_connect_host}:3084/mcp"
+
+            await extension.stop_extension()
+
+    def test_detect_root_dir_falls_back_to_cwd_when_serverapp_empty(self, tmp_path):
+        """An empty serverapp.root_dir should fall back to the current directory."""
+        extension = MCPExtensionApp()
+        extension.serverapp = Mock(root_dir="")
+
+        with patch("jupyter_server_mcp.extension.Path.cwd", return_value=tmp_path):
+            assert extension._detect_root_dir() == str(tmp_path.resolve())
+
+    @pytest.mark.asyncio
+    async def test_info_file_records_ephemeral_port_chosen_by_os(self, runtime_dir):
+        """When mcp_port is 0, the info file must record the real bound port."""
+        extension = MCPExtensionApp()
+        extension.mcp_port = 0  # request an ephemeral port
+
+        with patch("jupyter_server_mcp.extension.MCPServer") as mock_mcp_class:
+            # Simulate uvicorn binding to port 54321 after startup.
+            mock_server = _mock_running_server(port=54321)
+            mock_mcp_class.return_value = mock_server
+            extension._confirm_mcp_server_started = AsyncMock()
+
+            await extension.start_extension()
+
+            info_path = runtime.info_file_path(runtime_dir, os.getpid())
+            data = json.loads(info_path.read_text())
+            assert data["port"] == 54321
+            assert data["url"] == "http://localhost:54321/mcp"
+
+            await extension.stop_extension()
+
+
+class TestConfirmMCPServerStarted:
+    """Tests for the bind/failure/timeout logic in ``_confirm_mcp_server_started``."""
+
+    @pytest.mark.asyncio
+    async def test_returns_when_wait_until_bound_resolves(self):
+        """Normal path: ``wait_until_bound`` resolves first, no exception."""
+        extension = MCPExtensionApp()
+        extension.mcp_startup_timeout = 1
+
+        mock_server = _mock_running_server()
+        task = asyncio.create_task(_run_until_cancelled())
+        extension.mcp_server_instance = mock_server
+        extension.mcp_server_task = task
+
+        try:
+            await extension._confirm_mcp_server_started()
+        finally:
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+    @pytest.mark.asyncio
+    async def test_raises_when_server_task_fails_before_bind(self):
+        """If start_server raises before bind, the exception is surfaced."""
+        extension = MCPExtensionApp()
+        extension.mcp_startup_timeout = 1
+
+        mock_server = Mock()
+        mock_server.wait_until_bound = AsyncMock(side_effect=_run_until_cancelled)
+
+        async def failing_start():
+            msg = "bind failed"
+            raise RuntimeError(msg)
+
+        task = asyncio.create_task(failing_start())
+        extension.mcp_server_instance = mock_server
+        extension.mcp_server_task = task
+
+        with pytest.raises(RuntimeError, match="bind failed"):
+            await extension._confirm_mcp_server_started()
+
+    @pytest.mark.asyncio
+    async def test_raises_timeout_when_bind_stalls(self):
+        """If neither bind nor failure happens in time, raise ``TimeoutError``."""
+        extension = MCPExtensionApp()
+        extension.mcp_startup_timeout = 0.05
+
+        mock_server = Mock()
+        mock_server.wait_until_bound = AsyncMock(side_effect=_run_until_cancelled)
+
+        task = asyncio.create_task(_run_until_cancelled())
+        extension.mcp_server_instance = mock_server
+        extension.mcp_server_task = task
+
+        try:
+            with pytest.raises(TimeoutError, match="did not bind"):
+                await extension._confirm_mcp_server_started()
+        finally:
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+
+class TestConsoleScript:
+    """Verify the ``jupyter-server-mcp-proxy`` console script is installed."""
+
+    def test_proxy_entry_point_is_registered(self):
+        """The console script should resolve to ``proxy.main``."""
+        entry_points = importlib_metadata.entry_points()
+        if hasattr(entry_points, "select"):
+            scripts = entry_points.select(group="console_scripts")
+        else:
+            scripts = entry_points.get("console_scripts", [])
+
+        by_name = {ep.name: ep for ep in scripts}
+        ep = by_name.get("jupyter-server-mcp-proxy")
+        assert ep is not None, (
+            "jupyter-server-mcp-proxy console script is not installed"
+        )
+        assert ep.load() is proxy.main
+
+
+class TestConnectHost:
+    """Unit tests for ``_connect_host`` wildcard normalization."""
+
+    @pytest.mark.parametrize(
+        ("bind_host", "expected"),
+        [
+            ("0.0.0.0", "127.0.0.1"),
+            ("", "127.0.0.1"),
+            ("::", "::1"),
+            ("::0", "::1"),
+            ("localhost", "localhost"),
+            ("192.168.1.10", "192.168.1.10"),
+            ("example.com", "example.com"),
+        ],
+    )
+    def test_connect_host_mapping(self, bind_host, expected):
+        assert _connect_host(bind_host) == expected

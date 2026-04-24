@@ -1,9 +1,11 @@
 """Test the simplified MCP server functionality."""
 
 import asyncio
+import contextlib
 import errno
 import signal
 import socket
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -447,6 +449,78 @@ class TestMCPServerIntegration:
         assert server._registered_tools["simple_function"]["is_async"] is False
         assert server._registered_tools["async_function"]["is_async"] is True
         assert server._registered_tools["printer"]["is_async"] is False
+
+
+class TestBoundPortCapture:
+    """Unit tests for the bound-port capture hook."""
+
+    def test_capture_bound_port_updates_port_and_event(self):
+        """Simulate uvicorn completing startup and verify port + event."""
+
+        class _FakeSocket:
+            def getsockname(self):
+                return ("127.0.0.1", 55555)
+
+        fake_uvicorn = SimpleNamespace(
+            servers=[SimpleNamespace(sockets=[_FakeSocket()])]
+        )
+
+        server = MCPServer(port=0)
+        assert server.port == 0
+        assert not server._bound_event.is_set()
+
+        server._capture_bound_port(fake_uvicorn)
+
+        assert server.port == 55555
+        assert server._bound_event.is_set()
+
+    def test_capture_bound_port_no_servers_still_signals(self):
+        """Even if uvicorn has no listening sockets, the event must fire."""
+        fake_uvicorn = SimpleNamespace(servers=[])
+
+        server = MCPServer(port=1234)
+        server._capture_bound_port(fake_uvicorn)
+
+        # Port left alone — but waiters are released.
+        assert server.port == 1234
+        assert server._bound_event.is_set()
+
+    @pytest.mark.asyncio
+    async def test_wait_until_bound_respects_timeout(self):
+        """``wait_until_bound`` should raise ``TimeoutError`` if not set in time."""
+        server = MCPServer()
+        with pytest.raises(asyncio.TimeoutError):
+            await server.wait_until_bound(timeout=0.05)
+
+    @pytest.mark.asyncio
+    async def test_wait_until_bound_returns_once_set(self):
+        """Once the capture hook fires, waiters resolve immediately."""
+        server = MCPServer()
+        server._bound_event.set()
+        # Should return promptly without raising.
+        await asyncio.wait_for(server.wait_until_bound(), timeout=0.5)
+
+
+class TestEphemeralPortIntegration:
+    """Exercise the full ``start_server`` path with an OS-assigned port."""
+
+    @pytest.mark.integration
+    @pytest.mark.asyncio
+    async def test_ephemeral_port_is_captured_and_reachable(self):
+        """``port=0`` should resolve to a real, stable value after binding."""
+        server = MCPServer(port=0)
+        task = asyncio.create_task(server.start_server())
+        try:
+            await server.wait_until_bound(timeout=5.0)
+            assert server.port != 0
+            # Sanity-check the port is actually in use on localhost.
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+                probe.settimeout(1.0)
+                probe.connect(("127.0.0.1", server.port))
+        finally:
+            await server.stop_server()
+            with contextlib.suppress(asyncio.CancelledError):
+                await asyncio.wait_for(task, timeout=5.0)
 
 
 class TestJSONArgumentConversion:

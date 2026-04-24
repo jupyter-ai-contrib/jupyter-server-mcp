@@ -6,13 +6,35 @@ import importlib
 import importlib.metadata
 import inspect
 import logging
+import os
+from pathlib import Path
 
+from jupyter_core.paths import jupyter_runtime_dir
 from jupyter_server.extension.application import ExtensionApp
 from traitlets import Bool, Int, List, Unicode
 
 from .mcp_server import MCPServer
+from .runtime import info_file_path, remove_info_file, write_info_file
 
 logger = logging.getLogger(__name__)
+
+# Wildcard bind addresses are valid for listening but cannot be dialed.
+_WILDCARD_CONNECT_HOSTS = {
+    "0.0.0.0": "127.0.0.1",
+    "": "127.0.0.1",
+    "::": "::1",
+    "::0": "::1",
+}
+
+
+def _connect_host(bind_host: str) -> str:
+    """Return a host usable in a client URL for ``bind_host``.
+
+    Bind addresses like ``0.0.0.0`` or ``::`` instruct a server to listen on
+    all interfaces, but clients cannot connect to those literal values. Map
+    them to the matching loopback address so the published URL is dialable.
+    """
+    return _WILDCARD_CONNECT_HOSTS.get(bind_host, bind_host)
 
 
 class MCPExtensionApp(ExtensionApp):
@@ -22,9 +44,17 @@ class MCPExtensionApp(ExtensionApp):
     description = "Jupyter Server extension providing MCP server for tool registration"
 
     # Configurable traits
-    mcp_port = Int(default_value=3001, help="Port for the MCP server to listen on").tag(
-        config=True
-    )
+    mcp_port = Int(
+        default_value=3001,
+        help=(
+            "Port for the MCP server to listen on. "
+            "Defaults to 3001. Set to 0 to ask the OS to pick a free port — "
+            "useful when running multiple Jupyter servers side by side. "
+            "When port 0 is used, the stdio proxy "
+            "(python -m jupyter_server_mcp.proxy) can auto-discover the "
+            "chosen port via the runtime info file."
+        ),
+    ).tag(config=True)
 
     mcp_name = Unicode(
         default_value="Jupyter MCP Server", help="Name for the MCP server"
@@ -51,6 +81,8 @@ class MCPExtensionApp(ExtensionApp):
     mcp_server_instance: object | None = None
     mcp_server_task: asyncio.Task | None = None
     mcp_shutdown_timeout = 5
+    mcp_startup_timeout = 10
+    _runtime_info_path: Path | None = None
 
     def _load_function_from_string(self, tool_spec: str):
         """Load a function from a string specification.
@@ -192,20 +224,34 @@ class MCPExtensionApp(ExtensionApp):
         # Configuration is handled by traitlets
 
     async def _confirm_mcp_server_started(self):
-        """Raise if the background MCP server task failed during startup."""
+        """Wait for the MCP server to bind its port, or raise if startup fails."""
         task = self.mcp_server_task
-        if task is None:
+        instance = self.mcp_server_instance
+        if task is None or instance is None:
             return
 
-        done, _ = await asyncio.wait(
-            {task}, timeout=0.5, return_when=asyncio.FIRST_COMPLETED
-        )
-        if not done:
-            return
+        bound_wait = asyncio.ensure_future(instance.wait_until_bound())
+        try:
+            done, _ = await asyncio.wait(
+                {task, bound_wait},
+                timeout=self.mcp_startup_timeout,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+        finally:
+            if not bound_wait.done():
+                bound_wait.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await bound_wait
 
-        await task
-        msg = "MCP server exited during startup"
-        raise RuntimeError(msg)
+        if task in done:
+            # The server task finished before binding — surface its exception.
+            await task
+            msg = "MCP server exited during startup"
+            raise RuntimeError(msg)
+
+        if bound_wait not in done:
+            msg = f"MCP server did not bind within {self.mcp_startup_timeout} seconds"
+            raise TimeoutError(msg)
 
     async def _stop_mcp_server_task(self):
         """Stop the MCP server through its own shutdown path, then fall back."""
@@ -234,9 +280,10 @@ class MCPExtensionApp(ExtensionApp):
     async def start_extension(self):
         """Start the extension - called after Jupyter Server starts."""
         try:
-            self.log.info(
-                f"Starting MCP server '{self.mcp_name}' on port {self.mcp_port}"
+            port_desc = (
+                "an ephemeral port" if self.mcp_port == 0 else f"port {self.mcp_port}"
             )
+            self.log.info(f"Starting MCP server '{self.mcp_name}' on {port_desc}")
 
             self.mcp_server_instance = MCPServer(
                 parent=self, name=self.mcp_name, port=self.mcp_port
@@ -254,9 +301,12 @@ class MCPExtensionApp(ExtensionApp):
 
             await self._confirm_mcp_server_started()
 
+            bound_port = getattr(self.mcp_server_instance, "port", self.mcp_port)
             registered_count = len(self.mcp_server_instance._registered_tools)
-            self.log.info(f"✅ MCP server started on port {self.mcp_port}")
+            self.log.info(f"✅ MCP server started on port {bound_port}")
             self.log.info(f"Total registered tools: {registered_count}")
+
+            self._publish_runtime_info()
 
         except Exception as e:
             if self.mcp_server_task and not self.mcp_server_task.done():
@@ -264,10 +314,59 @@ class MCPExtensionApp(ExtensionApp):
                 with contextlib.suppress(asyncio.CancelledError):
                     await self.mcp_server_task
 
+            self._clear_runtime_info()
             self.mcp_server_task = None
             self.mcp_server_instance = None
             self.log.error(f"Failed to start MCP server: {e}")
             raise
+
+    def _publish_runtime_info(self):
+        """Write a runtime info file so the stdio proxy can discover this server."""
+        try:
+            server = self.mcp_server_instance
+            bind_host = getattr(server, "host", "localhost") or "localhost"
+            port = getattr(server, "port", self.mcp_port)
+            pid = os.getpid()
+            path = info_file_path(jupyter_runtime_dir(), pid)
+            # The bind host can be a wildcard like "0.0.0.0" or "::" — those
+            # are valid bind addresses but not usable as connect targets.
+            url_host = _connect_host(bind_host)
+            info = {
+                "pid": pid,
+                "host": bind_host,
+                "port": port,
+                "url": f"http://{url_host}:{port}/mcp",
+                "name": self.mcp_name,
+                "root_dir": self._detect_root_dir(),
+            }
+            write_info_file(path, info)
+        except Exception as exc:
+            self.log.warning(f"Could not publish MCP runtime info: {exc}")
+            self._runtime_info_path = None
+            return
+
+        self._runtime_info_path = path
+        self.log.info(f"Wrote MCP runtime info file: {path}")
+
+    def _clear_runtime_info(self):
+        """Remove the runtime info file if one was written."""
+        path = self._runtime_info_path
+        if path is None:
+            return
+        try:
+            remove_info_file(path)
+        except OSError as exc:
+            self.log.warning(f"Could not remove MCP runtime info file {path}: {exc}")
+        finally:
+            self._runtime_info_path = None
+
+    def _detect_root_dir(self) -> str:
+        """Return the Jupyter server's root directory, falling back to CWD."""
+        serverapp = getattr(self, "serverapp", None)
+        root_dir = getattr(serverapp, "root_dir", None)
+        if root_dir:
+            return str(Path(root_dir).resolve())
+        return str(Path.cwd().resolve())
 
     async def _start_jupyter_server_extension(self, serverapp):  # noqa: ARG002
         """Start the extension - called after Jupyter Server starts."""
@@ -278,6 +377,7 @@ class MCPExtensionApp(ExtensionApp):
         try:
             await self._stop_mcp_server_task()
         finally:
+            self._clear_runtime_info()
             self.mcp_server_task = None
             self.mcp_server_instance = None
         self.log.info("MCP server stopped")
