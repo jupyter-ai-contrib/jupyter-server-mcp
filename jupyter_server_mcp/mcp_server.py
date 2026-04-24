@@ -31,10 +31,20 @@ class MCPServerPortError(RuntimeError):
 class _EmbeddedUvicornServer(uvicorn.Server):
     """Uvicorn server variant that leaves process signals to Jupyter Server."""
 
+    def __init__(self, config: uvicorn.Config, *, on_startup_complete=None):
+        super().__init__(config)
+        self._on_startup_complete = on_startup_complete
+
     @contextlib.contextmanager
     def capture_signals(self):
         """Do not install SIGINT/SIGTERM handlers for embedded servers."""
         yield
+
+    async def startup(self, sockets=None):
+        """Run the default startup, then notify any listener that we are bound."""
+        await super().startup(sockets=sockets)
+        if self._on_startup_complete is not None:
+            self._on_startup_complete(self)
 
 
 def _ensure_port_available(host: str, port: int) -> None:
@@ -243,9 +253,14 @@ class MCPServer(LoggingConfigurable):
         default_value="Jupyter MCP Server", help="Name for the MCP server"
     ).tag(config=True)
 
-    port = Int(default_value=3001, help="Port for the MCP server to listen on").tag(
-        config=True
-    )
+    port = Int(
+        default_value=0,
+        help=(
+            "Port for the MCP server to listen on. "
+            "Defaults to 0, which asks the OS to pick a free port. "
+            "Set a fixed port when MCP clients connect directly over HTTP."
+        ),
+    ).tag(config=True)
 
     host = Unicode(
         default_value="localhost", help="Host for the MCP server to listen on"
@@ -263,6 +278,7 @@ class MCPServer(LoggingConfigurable):
         self.mcp = FastMCP(self.name)
         self._registered_tools = {}
         self._uvicorn_server: uvicorn.Server | None = None
+        self._bound_event: asyncio.Event = asyncio.Event()
         self.log.info(
             f"Initialized MCP server '{self.name}' on {self.host}:{self.port}"
         )
@@ -331,6 +347,36 @@ class MCPServer(LoggingConfigurable):
         """Get information about a specific tool."""
         return self._registered_tools.get(tool_name)
 
+    def _capture_bound_port(self, server: uvicorn.Server) -> None:
+        """Record the actual listening port once uvicorn has bound its sockets.
+
+        When uvicorn is given a hostname like ``localhost`` with port 0, it
+        binds an IPv4 and an IPv6 socket, each with its own ephemeral port.
+        Clients resolving ``localhost`` typically try IPv4 first, so prefer
+        the IPv4 port when both families are present.
+        """
+        bound_port: int | None = None
+        if server.servers:
+            for uv_server in server.servers:
+                for sock in uv_server.sockets:
+                    sockname = sock.getsockname()
+                    if not (isinstance(sockname, tuple) and len(sockname) >= 2):
+                        continue
+                    family = getattr(sock, "family", None)
+                    port = int(sockname[1])
+                    if family == socket.AF_INET:
+                        bound_port = port
+                        break
+                    if bound_port is None:
+                        bound_port = port
+                if bound_port is not None and (
+                    getattr(uv_server.sockets[0], "family", None) == socket.AF_INET
+                ):
+                    break
+        if bound_port is not None:
+            self.port = bound_port
+        self._bound_event.set()
+
     async def _run_http_async_without_signals(self, host: str, port: int) -> None:
         """Run FastMCP over HTTP without taking over process signal handlers."""
         transport = "http"
@@ -347,7 +393,9 @@ class MCPServer(LoggingConfigurable):
             ws="websockets-sansio",
             log_level=fastmcp_settings.log_level.lower(),
         )
-        server = _EmbeddedUvicornServer(config)
+        server = _EmbeddedUvicornServer(
+            config, on_startup_complete=self._capture_bound_port
+        )
         self._uvicorn_server = server
         path = getattr(app.state, "path", "").lstrip("/")
         self.log.info(
@@ -372,6 +420,13 @@ class MCPServer(LoggingConfigurable):
         if self._uvicorn_server is not None:
             self._uvicorn_server.should_exit = True
 
+    async def wait_until_bound(self, timeout: float | None = None) -> None:
+        """Block until the HTTP server has finished binding its listening port."""
+        if timeout is None:
+            await self._bound_event.wait()
+        else:
+            await asyncio.wait_for(self._bound_event.wait(), timeout=timeout)
+
     async def start_server(self, host: str | None = None):
         """Start the MCP server on the specified host and port."""
         server_host = host or self.host
@@ -379,4 +434,6 @@ class MCPServer(LoggingConfigurable):
 
         self.log.info(f"Registered tools: {list(self._registered_tools.keys())}")
 
+        # Reset (don't replace) the event so existing waiters stay subscribed.
+        self._bound_event.clear()
         await self._run_http_async_without_signals(host=server_host, port=self.port)
