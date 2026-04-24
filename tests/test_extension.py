@@ -53,7 +53,7 @@ class TestMCPExtensionApp:
         extension = MCPExtensionApp()
 
         assert extension.name == "jupyter_server_mcp"
-        assert extension.mcp_port == 0
+        assert extension.mcp_port == 3001
         assert extension.mcp_name == "Jupyter MCP Server"
 
     def test_extension_trait_configuration(self):

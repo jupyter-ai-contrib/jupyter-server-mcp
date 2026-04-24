@@ -73,7 +73,7 @@ class TestMCPServer:
         server = MCPServer()
 
         assert server.name == "Jupyter MCP Server"
-        assert server.port == 0
+        assert server.port == 3001
         assert server.host == "localhost"
         assert server.mcp is not None
         assert len(server._registered_tools) == 0
@@ -413,7 +413,7 @@ class TestMCPServerDirect:
 
         assert isinstance(server, MCPServer)
         assert server.name == "Jupyter MCP Server"
-        assert server.port == 0
+        assert server.port == 3001
 
     def test_create_server_with_params(self):
         """Test creating server with custom parameters."""

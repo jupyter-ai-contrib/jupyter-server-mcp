@@ -254,11 +254,11 @@ class MCPServer(LoggingConfigurable):
     ).tag(config=True)
 
     port = Int(
-        default_value=0,
+        default_value=3001,
         help=(
             "Port for the MCP server to listen on. "
-            "Defaults to 0, which asks the OS to pick a free port. "
-            "Set a fixed port when MCP clients connect directly over HTTP."
+            "Defaults to 3001. Set to 0 to ask the OS to pick a free port — "
+            "useful when running multiple servers side by side."
         ),
     ).tag(config=True)
 

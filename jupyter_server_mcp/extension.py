@@ -45,14 +45,14 @@ class MCPExtensionApp(ExtensionApp):
 
     # Configurable traits
     mcp_port = Int(
-        default_value=0,
+        default_value=3001,
         help=(
             "Port for the MCP server to listen on. "
-            "Defaults to 0, which asks the OS to pick a free port — "
-            "multiple Jupyter servers can then run side by side and the "
-            "stdio proxy (python -m jupyter_server_mcp.proxy) auto-discovers "
-            "each one. Set a fixed port (e.g. 3001) when clients connect "
-            "directly over HTTP."
+            "Defaults to 3001. Set to 0 to ask the OS to pick a free port — "
+            "useful when running multiple Jupyter servers side by side. "
+            "When port 0 is used, the stdio proxy "
+            "(python -m jupyter_server_mcp.proxy) can auto-discover the "
+            "chosen port via the runtime info file."
         ),
     ).tag(config=True)
 
