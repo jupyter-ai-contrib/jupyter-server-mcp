@@ -37,6 +37,13 @@ def _connect_host(bind_host: str) -> str:
     return _WILDCARD_CONNECT_HOSTS.get(bind_host, bind_host)
 
 
+def _url_host(host: str) -> str:
+    """Return ``host`` formatted for use in a URL authority."""
+    if ":" in host and not host.startswith("["):
+        return f"[{host}]"
+    return host
+
+
 class MCPExtensionApp(ExtensionApp):
     """The Jupyter Server MCP extension app."""
 
@@ -330,7 +337,7 @@ class MCPExtensionApp(ExtensionApp):
             path = info_file_path(jupyter_runtime_dir(), pid)
             # The bind host can be a wildcard like "0.0.0.0" or "::" — those
             # are valid bind addresses but not usable as connect targets.
-            url_host = _connect_host(bind_host)
+            url_host = _url_host(_connect_host(bind_host))
             info = {
                 "pid": pid,
                 "host": bind_host,

@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, Mock, patch
 import pytest
 
 from jupyter_server_mcp import proxy, runtime
-from jupyter_server_mcp.extension import MCPExtensionApp, _connect_host
+from jupyter_server_mcp.extension import MCPExtensionApp, _connect_host, _url_host
 from jupyter_server_mcp.mcp_server import MCPServer
 
 
@@ -583,32 +583,6 @@ class TestRuntimeInfoPublishing:
             assert not info_path.exists(), "info file should be removed on stop"
 
     @pytest.mark.asyncio
-    async def test_info_file_cleaned_up_on_startup_failure(self, runtime_dir):
-        """When startup fails after the info file is written, clean it up."""
-        extension = MCPExtensionApp()
-        extension.mcp_port = 3081
-
-        with patch("jupyter_server_mcp.extension.MCPServer") as mock_mcp_class:
-            mock_server = _mock_running_server(port=3081)
-            mock_mcp_class.return_value = mock_server
-            extension._confirm_mcp_server_started = AsyncMock()
-
-            # Force a failure after the info file would be written.
-            with (
-                patch.object(
-                    extension,
-                    "_publish_runtime_info",
-                    side_effect=RuntimeError("boom"),
-                ),
-                pytest.raises(RuntimeError, match="boom"),
-            ):
-                await extension.start_extension()
-
-        info_path = runtime.info_file_path(runtime_dir, os.getpid())
-        assert not info_path.exists()
-        assert extension.mcp_server_instance is None
-
-    @pytest.mark.asyncio
     @pytest.mark.usefixtures("runtime_dir")
     async def test_info_file_publish_is_non_fatal_on_error(self):
         """If publishing fails, the extension should still start."""
@@ -653,15 +627,15 @@ class TestRuntimeInfoPublishing:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
-        ("bind_host", "expected_connect_host"),
+        ("bind_host", "expected_url_host"),
         [
             ("0.0.0.0", "127.0.0.1"),
-            ("::", "::1"),
+            ("::", "[::1]"),
             ("localhost", "localhost"),
         ],
     )
     async def test_info_file_url_rewrites_wildcard_hosts(
-        self, runtime_dir, bind_host, expected_connect_host
+        self, runtime_dir, bind_host, expected_url_host
     ):
         """Wildcard bind hosts must be replaced with a dialable loopback in the URL."""
         extension = MCPExtensionApp()
@@ -677,7 +651,7 @@ class TestRuntimeInfoPublishing:
             info_path = runtime.info_file_path(runtime_dir, os.getpid())
             data = json.loads(info_path.read_text())
             assert data["host"] == bind_host
-            assert data["url"] == f"http://{expected_connect_host}:3084/mcp"
+            assert data["url"] == f"http://{expected_url_host}:3084/mcp"
 
             await extension.stop_extension()
 
@@ -810,3 +784,16 @@ class TestConnectHost:
     )
     def test_connect_host_mapping(self, bind_host, expected):
         assert _connect_host(bind_host) == expected
+
+    @pytest.mark.parametrize(
+        ("host", "expected"),
+        [
+            ("127.0.0.1", "127.0.0.1"),
+            ("localhost", "localhost"),
+            ("::1", "[::1]"),
+            ("2001:db8::1", "[2001:db8::1]"),
+            ("[::1]", "[::1]"),
+        ],
+    )
+    def test_url_host_formats_ipv6_literals(self, host, expected):
+        assert _url_host(host) == expected

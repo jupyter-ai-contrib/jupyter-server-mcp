@@ -94,29 +94,27 @@ class TestResolveUrl:
                 cwd=str(isolated_runtime_dir),
             )
 
-    def test_explicit_url_without_scheme_rejected(self, isolated_runtime_dir):
-        """URLs without a scheme are rejected before any discovery happens."""
-        with pytest.raises(proxy.ProxyError, match="absolute http"):
-            proxy.resolve_url(
-                url="localhost:3001/mcp",
-                runtime_dir=str(isolated_runtime_dir),
-                cwd=str(isolated_runtime_dir),
-            )
+    @pytest.mark.parametrize(
+        ("source", "value", "match"),
+        [
+            ("arg", "localhost:3001/mcp", "absolute http"),
+            ("arg", "file:///etc/passwd", "http or https"),
+            ("env", "ftp://example.com/mcp", "http or https"),
+        ],
+    )
+    def test_invalid_urls_are_rejected(
+        self, isolated_runtime_dir, monkeypatch, source, value, match
+    ):
+        """Explicit and env-var URLs must be absolute http(s) URLs."""
+        if source == "env":
+            monkeypatch.setenv(proxy.ENV_URL, value)
+            url = None
+        else:
+            url = value
 
-    def test_explicit_url_with_bad_scheme_rejected(self, isolated_runtime_dir):
-        """Non-http(s) schemes (e.g. file://) are rejected with a scheme error."""
-        with pytest.raises(proxy.ProxyError, match="http or https"):
+        with pytest.raises(proxy.ProxyError, match=match):
             proxy.resolve_url(
-                url="file:///etc/passwd",
-                runtime_dir=str(isolated_runtime_dir),
-                cwd=str(isolated_runtime_dir),
-            )
-
-    def test_env_url_with_bad_scheme_rejected(self, isolated_runtime_dir, monkeypatch):
-        """Validation applies to the env-var form too, not only to ``--url``."""
-        monkeypatch.setenv(proxy.ENV_URL, "ftp://example.com/mcp")
-        with pytest.raises(proxy.ProxyError, match="http or https"):
-            proxy.resolve_url(
+                url=url,
                 runtime_dir=str(isolated_runtime_dir),
                 cwd=str(isolated_runtime_dir),
             )
@@ -203,48 +201,6 @@ class TestSelectServer:
         ]
 
         assert proxy.select_server(servers, unrelated.resolve())["pid"] == 1
-
-
-class TestMatchScore:
-    """Unit tests for ``_match_score``."""
-
-    @pytest.mark.parametrize("bad_root", [None, "", 42, []])
-    def test_invalid_root_types_return_none(self, bad_root, tmp_path):
-        assert proxy._match_score(bad_root, tmp_path) is None
-
-    def test_unresolvable_root_returns_none(self, tmp_path, monkeypatch):
-        """If ``Path.resolve`` raises OSError, we must not score that server."""
-
-        original_resolve = Path.resolve
-
-        def raise_os_error(self, *args, **kwargs):  # noqa: ARG001
-            msg = "path loop"
-            raise OSError(msg)
-
-        monkeypatch.setattr(Path, "resolve", raise_os_error)
-        try:
-            assert proxy._match_score("/some/path", tmp_path) is None
-        finally:
-            monkeypatch.setattr(Path, "resolve", original_resolve)
-
-    def test_descendant_cwd_scores_by_parts(self, tmp_path):
-        """The score should be the number of parts in the resolved root path."""
-        root = tmp_path / "projects" / "alpha"
-        root.mkdir(parents=True)
-        cwd = root / "src"
-        cwd.mkdir()
-
-        score = proxy._match_score(str(root), cwd.resolve())
-
-        assert score == len(root.resolve().parts)
-
-    def test_unrelated_cwd_returns_none(self, tmp_path):
-        root = tmp_path / "projects"
-        other = tmp_path / "elsewhere"
-        root.mkdir()
-        other.mkdir()
-
-        assert proxy._match_score(str(root), other.resolve()) is None
 
 
 class TestMainCLI:

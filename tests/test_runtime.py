@@ -35,26 +35,19 @@ def test_info_file_path_format(tmp_path):
     assert path.name == "jpserver-mcp-4242.json"
 
 
-def test_write_info_file_is_atomic_and_readable(tmp_path):
-    """Writing should round-trip the payload and not leave .tmp files behind."""
-    path = tmp_path / "jpserver-mcp-1.json"
+def test_write_info_file_creates_parent_and_is_readable(tmp_path):
+    """Writing should create parents, round-trip JSON, and not leave temp files."""
+    path = tmp_path / "nested" / "jpserver-mcp-1.json"
     payload = {"pid": 1, "port": 3001, "url": "http://localhost:3001/mcp"}
 
     runtime.write_info_file(path, payload)
 
     assert path.exists()
     assert json.loads(path.read_text()) == payload
-    leftovers = [entry.name for entry in tmp_path.iterdir() if entry.suffix == ".tmp"]
+    leftovers = [
+        entry.name for entry in path.parent.iterdir() if entry.suffix == ".tmp"
+    ]
     assert leftovers == []
-
-
-def test_write_info_file_creates_parent_directory(tmp_path):
-    """``write_info_file`` should create missing parent directories."""
-    path = tmp_path / "nested" / "jpserver-mcp-9.json"
-
-    runtime.write_info_file(path, {"pid": 9})
-
-    assert path.exists()
 
 
 def test_remove_info_file_missing_is_noop(tmp_path):
@@ -62,15 +55,14 @@ def test_remove_info_file_missing_is_noop(tmp_path):
     runtime.remove_info_file(tmp_path / "missing.json")
 
 
-def test_list_running_mcp_servers_empty_dir(tmp_path):
-    """An empty runtime directory yields no servers."""
-    assert list(runtime.list_running_mcp_servers(tmp_path)) == []
+@pytest.mark.parametrize("exists", [True, False])
+def test_list_running_mcp_servers_empty_or_missing_dir(tmp_path, exists):
+    """Empty or missing runtime directories yield no servers."""
+    directory = tmp_path / "runtime"
+    if exists:
+        directory.mkdir()
 
-
-def test_list_running_mcp_servers_missing_dir(tmp_path):
-    """A missing runtime directory is handled gracefully."""
-    missing = tmp_path / "does-not-exist"
-    assert list(runtime.list_running_mcp_servers(missing)) == []
+    assert list(runtime.list_running_mcp_servers(directory)) == []
 
 
 def test_list_running_mcp_servers_ignores_unrelated_files(tmp_path, monkeypatch):
@@ -113,22 +105,21 @@ def test_list_running_mcp_servers_skips_invalid_json(tmp_path, monkeypatch):
     assert bad.exists()
 
 
-def test_list_running_mcp_servers_skips_missing_pid(tmp_path, monkeypatch):
-    """Entries without a numeric pid should be dropped."""
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"url": "http://localhost:3001/mcp"},
+        {"pid": "nope"},
+        {"pid": None},
+        {"pid": 1.5},
+    ],
+)
+def test_list_running_mcp_servers_rejects_missing_or_non_int_pid(
+    tmp_path, monkeypatch, payload
+):
+    """Only entries with integer pids should be accepted."""
     monkeypatch.setattr(runtime, "check_pid", lambda _pid: True)
     path = runtime.info_file_path(tmp_path, 1)
-    runtime.write_info_file(path, {"url": "http://localhost:3001/mcp"})
-
-    servers = list(runtime.list_running_mcp_servers(tmp_path))
-
-    assert servers == []
-
-
-@pytest.mark.parametrize("pid_value", ["nope", None, 1.5])
-def test_list_running_mcp_servers_rejects_non_int_pid(tmp_path, monkeypatch, pid_value):
-    """Only integer pids should be accepted."""
-    monkeypatch.setattr(runtime, "check_pid", lambda _pid: True)
-    path = runtime.info_file_path(tmp_path, 1)
-    runtime.write_info_file(path, {"pid": pid_value})
+    runtime.write_info_file(path, payload)
 
     assert list(runtime.list_running_mcp_servers(tmp_path)) == []

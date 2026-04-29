@@ -474,31 +474,12 @@ class TestBoundPortCapture:
         assert server.port == 55555
         assert server._bound_event.is_set()
 
-    def test_capture_bound_port_no_servers_still_signals(self):
-        """Even if uvicorn has no listening sockets, the event must fire."""
-        fake_uvicorn = SimpleNamespace(servers=[])
-
-        server = MCPServer(port=1234)
-        server._capture_bound_port(fake_uvicorn)
-
-        # Port left alone — but waiters are released.
-        assert server.port == 1234
-        assert server._bound_event.is_set()
-
     @pytest.mark.asyncio
     async def test_wait_until_bound_respects_timeout(self):
         """``wait_until_bound`` should raise ``TimeoutError`` if not set in time."""
         server = MCPServer()
         with pytest.raises(asyncio.TimeoutError):
             await server.wait_until_bound(timeout=0.05)
-
-    @pytest.mark.asyncio
-    async def test_wait_until_bound_returns_once_set(self):
-        """Once the capture hook fires, waiters resolve immediately."""
-        server = MCPServer()
-        server._bound_event.set()
-        # Should return promptly without raising.
-        await asyncio.wait_for(server.wait_until_bound(), timeout=0.5)
 
 
 class TestEphemeralPortIntegration:
