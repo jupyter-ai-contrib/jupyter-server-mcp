@@ -44,6 +44,9 @@ file="LICENSE"
 [project.entry-points."jupyter_server.extension_points"]
 jupyter_server_mcp = "jupyter_server_mcp.extension:MCPExtensionApp"
 
+[project.scripts]
+jupyter-server-mcp-proxy = "jupyter_server_mcp.proxy:main"
+
 [tool.hatch.version]
 path = "jupyter_server_mcp/__init__.py"
 
