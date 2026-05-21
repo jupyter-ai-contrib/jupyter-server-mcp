@@ -124,9 +124,12 @@ The proxy can be launched in two ways:
 - **`uvx`** — ideal for MCP clients that are not installed inside the same
   Python environment as Jupyter. [uv](https://docs.astral.sh/uv/) installs
   `jupyter-server-mcp` into a cached, ephemeral environment and runs its
-  `jupyter-server-mcp-proxy` console script. The runtime info file the
-  extension writes is stored in the per-user Jupyter runtime directory, so
-  auto-discovery works across environments.
+  `jupyter-server-mcp-proxy` console script. The extension writes its runtime
+  info file to both the environment-resolved Jupyter runtime directory and the
+  per-user default location, and the proxy searches both — so auto-discovery
+  works even when Jupyter runs with an environment-local `JUPYTER_DATA_DIR`
+  (for example inside a virtualenv) while the proxy runs in a different
+  environment.
 - **`python -m jupyter_server_mcp.proxy`** — use when the client is
   already running in an environment that has `jupyter-server-mcp`
   installed.
@@ -221,7 +224,7 @@ need to match the server side exactly.
 The proxy accepts a few optional arguments (append them to `args`):
 
 - `--url URL` — bypass auto-discovery and connect to an explicit MCP endpoint
-- `--runtime-dir DIR` — look in a specific Jupyter runtime directory
+- `--runtime-dir DIR` — search only this directory for the runtime info file, instead of the default candidate directories
 - `--cwd DIR` — use a different directory when disambiguating between servers
 
 `JUPYTER_SERVER_MCP_URL` is equivalent to `--url` and takes precedence over discovery when set.

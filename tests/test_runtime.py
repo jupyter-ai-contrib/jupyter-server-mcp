@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -123,3 +124,85 @@ def test_list_running_mcp_servers_rejects_missing_or_non_int_pid(
     runtime.write_info_file(path, payload)
 
     assert list(runtime.list_running_mcp_servers(tmp_path)) == []
+
+
+def test_default_runtime_dir_ignores_env_overrides(tmp_path, monkeypatch):
+    """default_runtime_dir must ignore JUPYTER_DATA_DIR / JUPYTER_RUNTIME_DIR."""
+    env_runtime = tmp_path / "env-runtime"
+    env_data = tmp_path / "env-data"
+    monkeypatch.setenv("JUPYTER_RUNTIME_DIR", str(env_runtime))
+    monkeypatch.setenv("JUPYTER_DATA_DIR", str(env_data))
+
+    result = Path(runtime.default_runtime_dir())
+
+    assert result != env_runtime
+    assert result != env_data / "runtime"
+    # The overrides must be restored after the call.
+    assert os.environ["JUPYTER_RUNTIME_DIR"] == str(env_runtime)
+    assert os.environ["JUPYTER_DATA_DIR"] == str(env_data)
+
+
+def test_candidate_runtime_dirs_explicit_is_single(tmp_path):
+    """An explicit runtime dir is used verbatim as the only candidate."""
+    assert runtime.candidate_runtime_dirs(tmp_path) == [Path(tmp_path)]
+
+
+def test_candidate_runtime_dirs_dedupes_when_dirs_coincide(tmp_path, monkeypatch):
+    """When the env-resolved and default dirs coincide, only one is returned."""
+    monkeypatch.setattr(runtime, "jupyter_runtime_dir", lambda: str(tmp_path))
+    monkeypatch.setattr(runtime, "default_runtime_dir", lambda: str(tmp_path))
+
+    assert runtime.candidate_runtime_dirs() == [Path(tmp_path)]
+
+
+def test_candidate_runtime_dirs_includes_both_when_relocated(tmp_path, monkeypatch):
+    """A relocated env dir yields both the env-resolved and default dirs."""
+    env_dir = tmp_path / "env"
+    default_dir = tmp_path / "default"
+    monkeypatch.setattr(runtime, "jupyter_runtime_dir", lambda: str(env_dir))
+    monkeypatch.setattr(runtime, "default_runtime_dir", lambda: str(default_dir))
+
+    assert runtime.candidate_runtime_dirs() == [env_dir, default_dir]
+
+
+def test_list_running_mcp_servers_scans_all_candidate_dirs(tmp_path, monkeypatch):
+    """Servers in any candidate dir are discovered, deduplicated by pid."""
+    monkeypatch.setattr(runtime, "check_pid", lambda _pid: True)
+    env_dir = tmp_path / "env"
+    default_dir = tmp_path / "default"
+    env_dir.mkdir()
+    default_dir.mkdir()
+    # Drive the real candidate_runtime_dirs() by relocating both candidates.
+    monkeypatch.setattr(runtime, "jupyter_runtime_dir", lambda: str(env_dir))
+    monkeypatch.setattr(runtime, "default_runtime_dir", lambda: str(default_dir))
+
+    # Only in the default dir (server env-local, client at the user level).
+    _write_info(default_dir, 1)
+    # Published to both dirs by the same server -> must be yielded once.
+    _write_info(env_dir, 2)
+    _write_info(default_dir, 2)
+
+    servers = list(runtime.list_running_mcp_servers())
+
+    assert sorted(s["pid"] for s in servers) == [1, 2]
+
+
+def test_list_running_mcp_servers_prefers_first_dir_for_duplicate_pid(
+    tmp_path, monkeypatch
+):
+    """For a pid present in several dirs, the higher-priority dir wins."""
+    monkeypatch.setattr(runtime, "check_pid", lambda _pid: True)
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+    monkeypatch.setattr(runtime, "jupyter_runtime_dir", lambda: str(first))
+    monkeypatch.setattr(runtime, "default_runtime_dir", lambda: str(second))
+
+    _write_info(first, 5)
+    _write_info(second, 5)
+
+    servers = list(runtime.list_running_mcp_servers())
+
+    assert len(servers) == 1
+    assert servers[0]["info_file"] == str(runtime.info_file_path(first, 5))

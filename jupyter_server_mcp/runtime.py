@@ -2,8 +2,17 @@
 
 The MCP extension writes a JSON file to Jupyter's runtime directory when it
 starts, so that the stdio proxy can find running MCP servers without the user
-having to hard-code a port. The file is named ``jpserver-mcp-<pid>.json`` and
-uses the same directory as ``list_running_servers`` for consistency.
+having to hard-code a port. The file is named ``jpserver-mcp-<pid>.json``.
+
+Discovery has to keep working even when the server and the client resolve
+*different* Jupyter runtime directories. That happens whenever the server is
+launched with an environment-local data dir — for example
+``JUPYTER_DATA_DIR=$VIRTUAL_ENV/share/jupyter`` — while the client (the stdio
+proxy) runs in a different environment and resolves the plain user-level
+directory. To make the rendezvous robust, the extension publishes to, and the
+proxy searches, a small set of candidate directories: the environment-resolved
+``jupyter_runtime_dir()`` and the environment-independent user-level default
+(see :func:`candidate_runtime_dirs`).
 """
 
 from __future__ import annotations
@@ -21,10 +30,64 @@ from jupyter_server.utils import check_pid
 INFO_FILE_PREFIX = "jpserver-mcp-"
 INFO_FILE_SUFFIX = ".json"
 
+# Environment variables that relocate ``jupyter_runtime_dir()`` away from the
+# stable, per-user default. They are cleared transiently to compute that
+# default in :func:`default_runtime_dir`.
+_RUNTIME_DIR_ENV_OVERRIDES = ("JUPYTER_RUNTIME_DIR", "JUPYTER_DATA_DIR")
+
 
 def info_file_path(runtime_dir: str | os.PathLike[str], pid: int) -> Path:
     """Return the path to the MCP info file for ``pid`` in ``runtime_dir``."""
     return Path(runtime_dir) / f"{INFO_FILE_PREFIX}{pid}{INFO_FILE_SUFFIX}"
+
+
+def default_runtime_dir() -> str:
+    """Return the user-level Jupyter runtime dir, ignoring env overrides.
+
+    ``jupyter_runtime_dir()`` honors ``$JUPYTER_RUNTIME_DIR`` and
+    ``$JUPYTER_DATA_DIR``. A server started with an environment-local data dir
+    (common in virtualenvs) therefore writes its info file where a client
+    started in a *different* environment will not look. Resolving the path with
+    those overrides removed yields a stable, per-user location both sides can
+    agree on, independent of how either process was launched.
+
+    The environment is restored before returning; the temporary mutation is
+    confined to this synchronous call.
+    """
+    saved = {
+        key: os.environ.pop(key)
+        for key in _RUNTIME_DIR_ENV_OVERRIDES
+        if key in os.environ
+    }
+    try:
+        return jupyter_runtime_dir()
+    finally:
+        os.environ.update(saved)
+
+
+def candidate_runtime_dirs(
+    runtime_dir: str | os.PathLike[str] | None = None,
+) -> list[Path]:
+    """Return the runtime directories to publish to and search, in order.
+
+    When ``runtime_dir`` is given it is used verbatim as the sole directory.
+    Otherwise the environment-resolved :func:`jupyter_runtime_dir` and the
+    environment-independent :func:`default_runtime_dir` are returned,
+    de-duplicated (they coincide unless ``$JUPYTER_DATA_DIR`` /
+    ``$JUPYTER_RUNTIME_DIR`` relocates the former).
+    """
+    if runtime_dir is not None:
+        return [Path(runtime_dir)]
+
+    dirs: list[Path] = []
+    seen: set[str] = set()
+    for candidate in (jupyter_runtime_dir(), default_runtime_dir()):
+        path = Path(candidate)
+        key = os.path.normcase(os.path.normpath(str(path)))
+        if key not in seen:
+            seen.add(key)
+            dirs.append(path)
+    return dirs
 
 
 def write_info_file(path: str | os.PathLike[str], info: dict[str, Any]) -> None:
@@ -42,16 +105,12 @@ def remove_info_file(path: str | os.PathLike[str]) -> None:
         Path(path).unlink()
 
 
-def list_running_mcp_servers(
-    runtime_dir: str | os.PathLike[str] | None = None,
-) -> Iterator[dict[str, Any]]:
-    """Yield info dicts for every MCP server that appears to be running.
+def _iter_dir_servers(directory: Path) -> Iterator[dict[str, Any]]:
+    """Yield valid info dicts from a single ``directory``, pruning stale files.
 
-    Stale info files — those whose owning process can no longer be found —
-    are unlinked as a side effect, mirroring ``list_running_servers`` in
-    ``jupyter_server``.
+    Info files whose owning process can no longer be found are unlinked as a
+    side effect, mirroring ``list_running_servers`` in ``jupyter_server``.
     """
-    directory = Path(jupyter_runtime_dir() if runtime_dir is None else runtime_dir)
     if not directory.is_dir():
         return
 
@@ -78,3 +137,24 @@ def list_running_mcp_servers(
 
         info["info_file"] = str(entry)
         yield info
+
+
+def list_running_mcp_servers(
+    runtime_dir: str | os.PathLike[str] | None = None,
+) -> Iterator[dict[str, Any]]:
+    """Yield info dicts for every MCP server that appears to be running.
+
+    Every directory returned by :func:`candidate_runtime_dirs` is scanned (or
+    just ``runtime_dir`` when one is given). A server that published to more
+    than one candidate directory is yielded only once, keyed by pid, with the
+    higher-priority directory winning. Stale info files are unlinked as a side
+    effect (see :func:`_iter_dir_servers`).
+    """
+    seen_pids: set[int] = set()
+    for directory in candidate_runtime_dirs(runtime_dir):
+        for info in _iter_dir_servers(directory):
+            pid = info["pid"]
+            if pid in seen_pids:
+                continue
+            seen_pids.add(pid)
+            yield info

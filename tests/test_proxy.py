@@ -80,6 +80,19 @@ class TestResolveUrl:
                 cwd=str(isolated_runtime_dir),
             )
 
+    def test_no_servers_error_lists_searched_dirs(self, isolated_runtime_dir):
+        """The discovery-failure error names the directories that were searched."""
+        with pytest.raises(proxy.ProxyError) as excinfo:
+            proxy.resolve_url(
+                runtime_dir=str(isolated_runtime_dir),
+                cwd=str(isolated_runtime_dir),
+            )
+
+        message = str(excinfo.value)
+        assert "No running Jupyter MCP servers" in message
+        assert "Searched these Jupyter runtime directories" in message
+        assert str(isolated_runtime_dir) in message
+
     def test_discovered_url_missing_raises(self, isolated_runtime_dir):
         """A malformed info dict raises a clear error."""
         path = runtime.info_file_path(isolated_runtime_dir, 17)
@@ -211,7 +224,9 @@ class TestMainCLI:
     ):
         """Discovery failures produce an error message and non-zero exit."""
         monkeypatch.chdir(isolated_runtime_dir)
-        exit_code = proxy.main([])
+        # Pin discovery to the empty temp dir so the test stays hermetic and
+        # never picks up a real MCP server running on the developer's machine.
+        exit_code = proxy.main(["--runtime-dir", str(isolated_runtime_dir)])
 
         assert exit_code == 2
         captured = capsys.readouterr()
