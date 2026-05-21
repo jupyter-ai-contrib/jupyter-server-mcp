@@ -1,9 +1,10 @@
 """Stdio MCP proxy bridging an MCP client to a running Jupyter MCP server.
 
 The extension writes a runtime info file when it starts (see
-``jupyter_server_mcp.runtime``). This module reads those files, picks the
-server that best matches the current working directory, and forwards MCP
-traffic from stdio to the server's HTTP endpoint.
+``jupyter_server_mcp.runtime``). This module reads those files from every
+candidate Jupyter runtime directory, picks the server that best matches the
+current working directory, and forwards MCP traffic from stdio to the
+server's HTTP endpoint.
 
 Run it with ``python -m jupyter_server_mcp.proxy``. MCP clients only need
 this stable command, regardless of which port the server is actually using.
@@ -21,7 +22,7 @@ from typing import Any
 
 from fastmcp.server import create_proxy
 
-from .runtime import list_running_mcp_servers
+from .runtime import candidate_runtime_dirs, list_running_mcp_servers
 
 ENV_URL = "JUPYTER_SERVER_MCP_URL"
 
@@ -38,7 +39,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         description=(
             "Bridge stdio MCP traffic to a running Jupyter MCP server. "
             "Auto-discovers the server by reading jpserver-mcp-*.json files "
-            "in the Jupyter runtime directory."
+            "from the Jupyter runtime directories."
         ),
     )
     parser.add_argument(
@@ -54,8 +55,8 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--runtime-dir",
         default=None,
         help=(
-            "Override the Jupyter runtime directory searched for info files. "
-            "Defaults to jupyter_core.paths.jupyter_runtime_dir()."
+            "Search only this directory for info files, instead of the "
+            "default candidate runtime directories."
         ),
     )
     parser.add_argument(
@@ -104,11 +105,16 @@ def _describe(server: dict[str, Any]) -> str:
     )
 
 
-def select_server(servers: list[dict[str, Any]], cwd: Path) -> dict[str, Any]:
+def select_server(
+    servers: list[dict[str, Any]],
+    cwd: Path,
+    searched_dirs: list[Path] | None = None,
+) -> dict[str, Any]:
     """Pick the MCP server that best matches ``cwd``.
 
     Selection rules:
-      * Zero servers → :class:`ProxyError`.
+      * Zero servers → :class:`ProxyError`. ``searched_dirs``, when provided,
+        is listed in the error to show where discovery looked.
       * Exactly one server → return it unconditionally, even if ``cwd`` is
         not below its ``root_dir`` (assumes the user just wants to connect).
       * Multiple servers → score each candidate by how deep its ``root_dir``
@@ -117,10 +123,14 @@ def select_server(servers: list[dict[str, Any]], cwd: Path) -> dict[str, Any]:
         disambiguate via ``--url`` or the ``JUPYTER_SERVER_MCP_URL`` env var.
     """
     if not servers:
+        searched = ""
+        if searched_dirs:
+            listing = "\n".join(f"  - {directory}" for directory in searched_dirs)
+            searched = f"\nSearched these Jupyter runtime directories:\n{listing}"
         msg = (
             "No running Jupyter MCP servers were discovered. Start Jupyter "
             "Server with the jupyter-server-mcp extension, or pass --url / "
-            f"set ${ENV_URL}."
+            f"set ${ENV_URL}.{searched}"
         )
         raise ProxyError(msg)
 
@@ -184,7 +194,9 @@ def resolve_url(
 
     cwd_path = Path(cwd if cwd is not None else Path.cwd()).resolve()
     servers = list(list_running_mcp_servers(runtime_dir))
-    server = select_server(servers, cwd_path)
+    server = select_server(
+        servers, cwd_path, searched_dirs=candidate_runtime_dirs(runtime_dir)
+    )
 
     endpoint = server.get("url")
     if not isinstance(endpoint, str) or not endpoint:

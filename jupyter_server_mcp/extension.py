@@ -9,12 +9,16 @@ import logging
 import os
 from pathlib import Path
 
-from jupyter_core.paths import jupyter_runtime_dir
 from jupyter_server.extension.application import ExtensionApp
 from traitlets import Bool, Int, List, Unicode
 
 from .mcp_server import MCPServer
-from .runtime import info_file_path, remove_info_file, write_info_file
+from .runtime import (
+    candidate_runtime_dirs,
+    info_file_path,
+    remove_info_file,
+    write_info_file,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -89,7 +93,7 @@ class MCPExtensionApp(ExtensionApp):
     mcp_server_task: asyncio.Task | None = None
     mcp_shutdown_timeout = 5
     mcp_startup_timeout = 10
-    _runtime_info_path: Path | None = None
+    _runtime_info_paths: tuple[Path, ...] = ()
 
     def _load_function_from_string(self, tool_spec: str):
         """Load a function from a string specification.
@@ -328,13 +332,20 @@ class MCPExtensionApp(ExtensionApp):
             raise
 
     def _publish_runtime_info(self):
-        """Write a runtime info file so the stdio proxy can discover this server."""
+        """Write runtime info files so the stdio proxy can discover this server.
+
+        The file is published to every directory in
+        :func:`~jupyter_server_mcp.runtime.candidate_runtime_dirs` so a client
+        that resolves a different Jupyter runtime directory — for example when
+        this server runs with an environment-local ``JUPYTER_DATA_DIR`` — can
+        still find it. A failure to write any single file is logged but
+        non-fatal.
+        """
         try:
             server = self.mcp_server_instance
             bind_host = getattr(server, "host", "localhost") or "localhost"
             port = getattr(server, "port", self.mcp_port)
             pid = os.getpid()
-            path = info_file_path(jupyter_runtime_dir(), pid)
             # The bind host can be a wildcard like "0.0.0.0" or "::" — those
             # are valid bind addresses but not usable as connect targets.
             url_host = _url_host(_connect_host(bind_host))
@@ -346,26 +357,38 @@ class MCPExtensionApp(ExtensionApp):
                 "name": self.mcp_name,
                 "root_dir": self._detect_root_dir(),
             }
-            write_info_file(path, info)
+            directories = candidate_runtime_dirs()
         except Exception as exc:
-            self.log.warning(f"Could not publish MCP runtime info: {exc}")
-            self._runtime_info_path = None
+            self.log.warning(f"Could not prepare MCP runtime info: {exc}")
+            self._runtime_info_paths = ()
             return
 
-        self._runtime_info_path = path
-        self.log.info(f"Wrote MCP runtime info file: {path}")
+        written: list[Path] = []
+        for directory in directories:
+            path = info_file_path(directory, pid)
+            try:
+                write_info_file(path, info)
+            except Exception as exc:
+                self.log.warning(f"Could not publish MCP runtime info to {path}: {exc}")
+                continue
+            written.append(path)
+            self.log.info(f"Wrote MCP runtime info file: {path}")
+
+        self._runtime_info_paths = tuple(written)
 
     def _clear_runtime_info(self):
-        """Remove the runtime info file if one was written."""
-        path = self._runtime_info_path
-        if path is None:
+        """Remove any runtime info files that were written."""
+        paths = self._runtime_info_paths
+        if not paths:
             return
-        try:
-            remove_info_file(path)
-        except OSError as exc:
-            self.log.warning(f"Could not remove MCP runtime info file {path}: {exc}")
-        finally:
-            self._runtime_info_path = None
+        for path in paths:
+            try:
+                remove_info_file(path)
+            except OSError as exc:
+                self.log.warning(
+                    f"Could not remove MCP runtime info file {path}: {exc}"
+                )
+        self._runtime_info_paths = ()
 
     def _detect_root_dir(self) -> str:
         """Return the Jupyter server's root directory, falling back to CWD."""

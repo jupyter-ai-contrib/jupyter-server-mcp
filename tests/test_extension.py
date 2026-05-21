@@ -15,15 +15,15 @@ from jupyter_server_mcp.mcp_server import MCPServer
 
 @pytest.fixture(autouse=True)
 def _isolated_jupyter_runtime_dir(tmp_path_factory, monkeypatch):
-    """Ensure tests never write MCP info files to the real runtime directory.
+    """Ensure tests never write MCP info files to the real runtime directories.
 
     Individual tests may still override this by monkey-patching again or by
     installing their own ``runtime_dir`` fixture.
     """
     fake_dir = tmp_path_factory.mktemp("jupyter_runtime_dir")
     monkeypatch.setattr(
-        "jupyter_server_mcp.extension.jupyter_runtime_dir",
-        lambda: str(fake_dir),
+        "jupyter_server_mcp.extension.candidate_runtime_dirs",
+        lambda: [fake_dir],
     )
 
 
@@ -547,10 +547,10 @@ class TestRuntimeInfoPublishing:
 
     @pytest.fixture
     def runtime_dir(self, tmp_path, monkeypatch):
-        """Redirect ``jupyter_runtime_dir`` so tests do not touch the user's dir."""
+        """Redirect publishing so tests do not touch the user's runtime dirs."""
         monkeypatch.setattr(
-            "jupyter_server_mcp.extension.jupyter_runtime_dir",
-            lambda: str(tmp_path),
+            "jupyter_server_mcp.extension.candidate_runtime_dirs",
+            lambda: [tmp_path],
         )
         return tmp_path
 
@@ -583,6 +583,40 @@ class TestRuntimeInfoPublishing:
             assert not info_path.exists(), "info file should be removed on stop"
 
     @pytest.mark.asyncio
+    async def test_info_file_written_to_all_candidate_dirs(self, tmp_path, monkeypatch):
+        """Publishing fans out to every candidate dir and is cleared from all."""
+        env_dir = tmp_path / "env"
+        default_dir = tmp_path / "default"
+        env_dir.mkdir()
+        default_dir.mkdir()
+        monkeypatch.setattr(
+            "jupyter_server_mcp.extension.candidate_runtime_dirs",
+            lambda: [env_dir, default_dir],
+        )
+
+        extension = MCPExtensionApp()
+        extension.mcp_port = 3081
+
+        with patch("jupyter_server_mcp.extension.MCPServer") as mock_mcp_class:
+            mock_server = _mock_running_server(port=3081)
+            mock_mcp_class.return_value = mock_server
+            extension._confirm_mcp_server_started = AsyncMock()
+
+            await extension.start_extension()
+
+            path_env = runtime.info_file_path(env_dir, os.getpid())
+            path_default = runtime.info_file_path(default_dir, os.getpid())
+            assert path_env.exists()
+            assert path_default.exists()
+            assert set(extension._runtime_info_paths) == {path_env, path_default}
+
+            await extension.stop_extension()
+
+            assert not path_env.exists()
+            assert not path_default.exists()
+            assert extension._runtime_info_paths == ()
+
+    @pytest.mark.asyncio
     @pytest.mark.usefixtures("runtime_dir")
     async def test_info_file_publish_is_non_fatal_on_error(self):
         """If publishing fails, the extension should still start."""
@@ -601,7 +635,7 @@ class TestRuntimeInfoPublishing:
                 await extension.start_extension()
 
             assert extension.mcp_server_instance is mock_server
-            assert extension._runtime_info_path is None
+            assert extension._runtime_info_paths == ()
 
             await extension.stop_extension()
 
