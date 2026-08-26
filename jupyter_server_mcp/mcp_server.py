@@ -21,6 +21,8 @@ from fastmcp.utilities.cli import log_server_banner
 from traitlets import Int, Unicode
 from traitlets.config.configurable import LoggingConfigurable
 
+from .client_routing import ClientRoutingMiddleware
+
 logger = logging.getLogger(__name__)
 
 
@@ -276,6 +278,11 @@ class MCPServer(LoggingConfigurable):
 
         # Initialize FastMCP and tools registry
         self.mcp = FastMCP(self.name)
+        # Route JupyterLab frontend commands to the web client that triggered
+        # the call (see client_routing.ClientRoutingMiddleware). Hard-wired, but
+        # a safe no-op unless jupyterlab-commands-toolkit is installed and the
+        # persona manager has attached identity headers.
+        self.mcp.add_middleware(ClientRoutingMiddleware())
         self._registered_tools = {}
         self._uvicorn_server: uvicorn.Server | None = None
         self._bound_event: asyncio.Event = asyncio.Event()
@@ -334,7 +341,7 @@ class MCPServer(LoggingConfigurable):
                 self.register_tool(func, name=name)
         else:
             msg = "tools must be a list of functions or dict mapping names to functions"
-            raise ValueError(msg)
+            raise ValueError(msg)  # noqa: TRY004
 
     def list_tools(self) -> list[dict[str, Any]]:
         """List all registered tools."""
