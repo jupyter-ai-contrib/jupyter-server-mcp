@@ -504,6 +504,101 @@ class TestEphemeralPortIntegration:
                 await asyncio.wait_for(task, timeout=5.0)
 
 
+def _raw_http_post(port: int, host_header: str, origin: str | None = None):
+    """Send a crafted HTTP POST to the MCP endpoint and return the status code.
+
+    Uses a raw socket so the ``Host`` header can be set to an arbitrary value
+    (which higher-level clients derive from the URL and will not let us forge).
+    """
+    body = (
+        b'{"jsonrpc":"2.0","id":1,"method":"initialize","params":'
+        b'{"protocolVersion":"2025-06-18","capabilities":{},'
+        b'"clientInfo":{"name":"t","version":"1"}}}'
+    )
+    lines = [
+        "POST /mcp/ HTTP/1.1",
+        f"Host: {host_header}",
+        "Content-Type: application/json",
+        "Accept: application/json, text/event-stream",
+        f"Content-Length: {len(body)}",
+        "Connection: close",
+    ]
+    if origin is not None:
+        lines.insert(2, f"Origin: {origin}")
+    request = ("\r\n".join(lines) + "\r\n\r\n").encode("ascii") + body
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.settimeout(5.0)
+        sock.connect(("127.0.0.1", port))
+        sock.sendall(request)
+        status_line = b""
+        while b"\r\n" not in status_line:
+            chunk = sock.recv(256)
+            if not chunk:
+                break
+            status_line += chunk
+    # e.g. b"HTTP/1.1 421 Misdirected Request\r\n..."
+    return int(status_line.split()[1])
+
+
+@pytest.mark.integration
+class TestHostOriginProtection:
+    """Validate the Host/Origin request guard on the MCP server."""
+
+    def test_secure_by_default(self):
+        """Host/Origin protection is enabled with an empty allowlist by default."""
+        server = MCPServer()
+        assert server.host_origin_protection is True
+        assert server.allowed_hosts == []
+        assert server.allowed_origins == []
+
+    @pytest.mark.asyncio
+    async def test_foreign_host_and_origin_are_rejected(self):
+        """Foreign ``Host`` yields 421 and foreign ``Origin`` yields 403.
+
+        Loopback requests (as used by the in-process MCP client) pass through.
+        """
+        server = MCPServer(port=0)
+        task = asyncio.create_task(server.start_server(host="127.0.0.1"))
+        try:
+            await server.wait_until_bound(timeout=5.0)
+            port = server.port
+
+            # Legitimate loopback request (no Origin) is not blocked by the guard.
+            legit = await asyncio.to_thread(_raw_http_post, port, f"127.0.0.1:{port}")
+            assert legit not in (403, 421)
+
+            # DNS-rebinding: attacker domain rebinds to 127.0.0.1 -> foreign Host.
+            rebind = await asyncio.to_thread(_raw_http_post, port, "attacker.com")
+            assert rebind == 421
+
+            # Cross-origin: loopback Host but attacker-controlled Origin.
+            cross = await asyncio.to_thread(
+                _raw_http_post, port, f"127.0.0.1:{port}", "http://evil.example"
+            )
+            assert cross == 403
+        finally:
+            await server.stop_server()
+            with contextlib.suppress(asyncio.CancelledError):
+                await asyncio.wait_for(task, timeout=5.0)
+
+    @pytest.mark.asyncio
+    async def test_protection_can_be_disabled(self):
+        """Setting ``host_origin_protection=False`` restores unguarded behavior."""
+        server = MCPServer(port=0, host_origin_protection=False)
+        task = asyncio.create_task(server.start_server(host="127.0.0.1"))
+        try:
+            await server.wait_until_bound(timeout=5.0)
+            port = server.port
+            # With protection off, a foreign Host is no longer rejected.
+            status = await asyncio.to_thread(_raw_http_post, port, "attacker.com")
+            assert status not in (403, 421)
+        finally:
+            await server.stop_server()
+            with contextlib.suppress(asyncio.CancelledError):
+                await asyncio.wait_for(task, timeout=5.0)
+
+
 class TestJSONArgumentConversion:
     """Test JSON argument conversion functionality."""
 
