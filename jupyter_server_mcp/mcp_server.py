@@ -359,7 +359,7 @@ class MCPServer(LoggingConfigurable):
                 self.register_tool(func, name=name)
         else:
             msg = "tools must be a list of functions or dict mapping names to functions"
-            raise ValueError(msg)
+            raise ValueError(msg)  # noqa: TRY004
 
     def list_tools(self) -> list[dict[str, Any]]:
         """List all registered tools."""
