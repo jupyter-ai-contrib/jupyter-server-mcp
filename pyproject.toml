@@ -32,7 +32,9 @@ test = [
     "pytest-asyncio>=0.21.0", 
     "pytest-jupyter[server]>=0.6",
     "pytest-tornasync>=0.6.0",
-    "pytest-mock>=3.10.0"
+    "pytest-mock>=3.10.0",
+    # Provides `target_client_id`, exercised by the client-routing E2E tests.
+    "jupyterlab-commands-toolkit>=0.2.0a0",
 ]
 dev = [
     "ruff>=0.1.0"
