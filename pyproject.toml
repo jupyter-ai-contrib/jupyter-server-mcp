@@ -23,7 +23,12 @@ classifiers = [
 
 dependencies = [
     "jupyter_server>=1.6,<3",
-    "fastmcp>=3"
+    # 3.4.3 introduced FastMCP's Host/Origin request guard, but shipped it on
+    # by default and broke HTTP/proxy deployments; 3.4.4 stabilized the guard
+    # (relaxed defaults + restored compatibility). We rely on its
+    # ``host_origin_protection`` / ``allowed_hosts`` / ``allowed_origins``
+    # arguments to ``http_app``.
+    "fastmcp>=3.4.4"
 ]
 
 [project.optional-dependencies]
