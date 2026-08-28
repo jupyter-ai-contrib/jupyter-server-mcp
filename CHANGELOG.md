@@ -2,6 +2,25 @@
 
 <!-- <START NEW CHANGELOG ENTRY> -->
 
+## 0.2.2
+
+([Full Changelog](https://github.com/jupyter-ai-contrib/jupyter-server-mcp/compare/v0.2.1...b6204fe5bf519a5a40d258651969b4dc4b69c6d3))
+
+### Merged PRs
+
+- [0.2.x] Enable Host/Origin protection by default [#29](https://github.com/jupyter-ai-contrib/jupyter-server-mcp/pull/29) ([@dlqqq](https://github.com/dlqqq))
+
+### Contributors to this release
+
+The following people contributed discussions, new ideas, code and documentation contributions, and review.
+See [our definition of contributors](https://github-activity.readthedocs.io/en/latest/use/#how-does-this-tool-define-contributions-in-the-reports).
+
+([GitHub contributors page for this release](https://github.com/jupyter-ai-contrib/jupyter-server-mcp/graphs/contributors?from=2026-04-23&to=2026-08-28&type=c))
+
+@dlqqq ([activity](https://github.com/search?q=repo%3Ajupyter-ai-contrib%2Fjupyter-server-mcp+involves%3Adlqqq+updated%3A2026-04-23..2026-08-28&type=Issues))
+
+<!-- <END NEW CHANGELOG ENTRY> -->
+
 ## 0.2.1
 
 ([Full Changelog](https://github.com/jupyter-ai-contrib/jupyter-server-mcp/compare/v0.2.0...9ace729326708f546b101cf4dedca30aa0462a17))
@@ -18,8 +37,6 @@ See [our definition of contributors](https://github-activity.readthedocs.io/en/l
 ([GitHub contributors page for this release](https://github.com/jupyter-ai-contrib/jupyter-server-mcp/graphs/contributors?from=2026-04-22&to=2026-04-23&type=c))
 
 @jtpio ([activity](https://github.com/search?q=repo%3Ajupyter-ai-contrib%2Fjupyter-server-mcp+involves%3Ajtpio+updated%3A2026-04-22..2026-04-23&type=Issues))
-
-<!-- <END NEW CHANGELOG ENTRY> -->
 
 ## 0.2.0
 

@@ -4,7 +4,7 @@ from typing import Any
 
 from .extension import MCPExtensionApp
 
-__version__ = "0.2.1"
+__version__ = "0.2.2"
 
 
 def _jupyter_server_extension_points() -> list[dict[str, Any]]:
