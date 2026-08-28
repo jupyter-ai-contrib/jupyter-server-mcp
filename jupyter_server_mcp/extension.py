@@ -103,7 +103,7 @@ class MCPExtensionApp(ExtensionApp):
                 function = self._load_function_from_string(tool_spec)
                 self.mcp_server_instance.register_tool(function)
                 logger.info(f"✅ Registered tool from {source}: {tool_spec}")
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 logger.error(
                     f"❌ Failed to register tool '{tool_spec}' from {source}: {e}"
                 )
@@ -166,11 +166,11 @@ class MCPExtensionApp(ExtensionApp):
                         f"Discovered {len(valid_specs)} tools from entrypoint '{entry_point.name}'"
                     )
 
-                except Exception as e:
+                except Exception as e:  # noqa: BLE001
                     logger.error(f"Failed to load entrypoint '{entry_point.name}': {e}")
                     continue
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             logger.error(f"Failed to discover entrypoints: {e}")
 
         if not discovered_tools:

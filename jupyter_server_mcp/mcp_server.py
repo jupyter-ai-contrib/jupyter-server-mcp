@@ -18,7 +18,8 @@ import uvicorn
 from fastmcp import FastMCP
 from fastmcp import settings as fastmcp_settings
 from fastmcp.utilities.cli import log_server_banner
-from traitlets import Int, Unicode
+from traitlets import Bool, Enum, Int, List, Unicode
+from traitlets import Union as UnionTrait
 from traitlets.config.configurable import LoggingConfigurable
 
 logger = logging.getLogger(__name__)
@@ -251,6 +252,46 @@ class MCPServer(LoggingConfigurable):
         default_value="localhost", help="Host for the MCP server to listen on"
     ).tag(config=True)
 
+    host_origin_protection = UnionTrait(
+        [Bool(), Enum(["auto"])],
+        default_value=True,
+        help=(
+            "Validate the ``Host`` and ``Origin`` headers of incoming requests "
+            "to protect the MCP server against DNS-rebinding and cross-origin "
+            "attacks (the MCP server runs on its own port, outside Jupyter "
+            "Server's token/XSRF protection). "
+            "``True`` (default) always validates; ``'auto'`` validates only "
+            "when bound to a loopback address; ``False`` disables validation "
+            "and is strongly discouraged. The loopback hosts (127.0.0.1, "
+            "localhost, ::1) and the configured bind ``host`` are always "
+            "trusted. Requests with a foreign ``Origin`` are rejected with 403 "
+            "and those with a foreign ``Host`` with 421, before reaching any "
+            "registered tool."
+        ),
+    ).tag(config=True)
+
+    allowed_hosts = List(
+        trait=Unicode(),
+        default_value=[],
+        help=(
+            "Additional ``Host`` header values to accept, beyond the loopback "
+            "defaults (127.0.0.1, localhost, ::1) and the configured bind "
+            "``host``. Set this for reverse-proxy or non-loopback deployments. "
+            "Only used when ``host_origin_protection`` is enabled."
+        ),
+    ).tag(config=True)
+
+    allowed_origins = List(
+        trait=Unicode(),
+        default_value=[],
+        help=(
+            "Additional browser ``Origin`` values to trust, beyond the loopback "
+            "defaults. Set this when the MCP server is legitimately reached "
+            "from a non-loopback web origin. "
+            "Only used when ``host_origin_protection`` is enabled."
+        ),
+    ).tag(config=True)
+
     def __init__(self, **kwargs):
         """Initialize the MCP server.
 
@@ -318,7 +359,7 @@ class MCPServer(LoggingConfigurable):
                 self.register_tool(func, name=name)
         else:
             msg = "tools must be a list of functions or dict mapping names to functions"
-            raise ValueError(msg)
+            raise ValueError(msg)  # noqa: TRY004
 
     def list_tools(self) -> list[dict[str, Any]]:
         """List all registered tools."""
@@ -334,7 +375,12 @@ class MCPServer(LoggingConfigurable):
     async def _run_http_async_without_signals(self, host: str, port: int) -> None:
         """Run FastMCP over HTTP without taking over process signal handlers."""
         transport = "http"
-        app = self.mcp.http_app(transport=transport)
+        app = self.mcp.http_app(
+            transport=transport,
+            host_origin_protection=self.host_origin_protection,
+            allowed_hosts=list(self.allowed_hosts) or None,
+            allowed_origins=list(self.allowed_origins) or None,
+        )
 
         log_server_banner(server=self.mcp)
 
