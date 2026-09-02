@@ -28,7 +28,13 @@ dependencies = [
     # (relaxed defaults + restored compatibility). We rely on its
     # ``host_origin_protection`` / ``allowed_hosts`` / ``allowed_origins``
     # arguments to ``http_app``.
-    "fastmcp>=3.4.4"
+    #
+    # Cap below 4.0: fastmcp 4.0.0 (2026-08-31) is a major with breaking
+    # changes and raises its own mcp floor to >=2.0 (via fastmcp-slim), whereas
+    # 3.4.x pins mcp<2.0. We have not yet verified jupyter-server-mcp against
+    # fastmcp 4.x / mcp 2.x, so hold at 3.x until we do. This also keeps the
+    # transitive mcp SDK on the 1.x API that downstream clients still use.
+    "fastmcp>=3.4.4,<4"
 ]
 
 [project.optional-dependencies]
