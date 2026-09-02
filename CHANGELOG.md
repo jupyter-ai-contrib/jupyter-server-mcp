@@ -2,6 +2,31 @@
 
 <!-- <START NEW CHANGELOG ENTRY> -->
 
+## 0.3.0
+
+([Full Changelog](https://github.com/jupyter-ai-contrib/jupyter-server-mcp/compare/v0.2.1...e8691490d022d950534f651f1bffa086d4303159))
+
+### Enhancements made
+
+- Add stdio proxy launcher [#24](https://github.com/jupyter-ai-contrib/jupyter-server-mcp/pull/24) ([@jtpio](https://github.com/jtpio))
+
+### Other merged PRs
+
+- Add `fastmcp<4` version ceiling [#30](https://github.com/jupyter-ai-contrib/jupyter-server-mcp/pull/30) ([@dlqqq](https://github.com/dlqqq))
+- Enable Host/Origin protection by default [#28](https://github.com/jupyter-ai-contrib/jupyter-server-mcp/pull/28) ([@dlqqq](https://github.com/dlqqq))
+- Route frontend commands to the web client that triggered them [#27](https://github.com/jupyter-ai-contrib/jupyter-server-mcp/pull/27) ([@dlqqq](https://github.com/dlqqq))
+
+### Contributors to this release
+
+The following people contributed discussions, new ideas, code and documentation contributions, and review.
+See [our definition of contributors](https://github-activity.readthedocs.io/en/latest/use/#how-does-this-tool-define-contributions-in-the-reports).
+
+([GitHub contributors page for this release](https://github.com/jupyter-ai-contrib/jupyter-server-mcp/graphs/contributors?from=2026-04-23&to=2026-09-02&type=c))
+
+@dlqqq ([activity](https://github.com/search?q=repo%3Ajupyter-ai-contrib%2Fjupyter-server-mcp+involves%3Adlqqq+updated%3A2026-04-23..2026-09-02&type=Issues)) | @jtpio ([activity](https://github.com/search?q=repo%3Ajupyter-ai-contrib%2Fjupyter-server-mcp+involves%3Ajtpio+updated%3A2026-04-23..2026-09-02&type=Issues))
+
+<!-- <END NEW CHANGELOG ENTRY> -->
+
 ## 0.3.0rc0
 
 ([Full Changelog](https://github.com/jupyter-ai-contrib/jupyter-server-mcp/compare/v0.3.0a1...49db0480e410f2eb07d522bcac45b4ce62ff17da))
@@ -18,8 +43,6 @@ See [our definition of contributors](https://github-activity.readthedocs.io/en/l
 ([GitHub contributors page for this release](https://github.com/jupyter-ai-contrib/jupyter-server-mcp/graphs/contributors?from=2026-08-27&to=2026-08-28&type=c))
 
 @dlqqq ([activity](https://github.com/search?q=repo%3Ajupyter-ai-contrib%2Fjupyter-server-mcp+involves%3Adlqqq+updated%3A2026-08-27..2026-08-28&type=Issues))
-
-<!-- <END NEW CHANGELOG ENTRY> -->
 
 ## 0.3.0a1
 
