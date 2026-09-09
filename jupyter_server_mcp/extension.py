@@ -85,6 +85,25 @@ class MCPExtensionApp(ExtensionApp):
         ),
     ).tag(config=True)
 
+    mcp_middleware = List(
+        trait=Unicode(),
+        default_value=[],
+        help=(
+            "List of middleware to add to the MCP server. "
+            "Format: 'module_path:factory', where the factory is called "
+            "without arguments and returns a FastMCP middleware "
+            "(a Middleware subclass works as is)"
+        ),
+    ).tag(config=True)
+
+    use_middleware_discovery = Bool(
+        default_value=True,
+        help=(
+            "Whether to automatically discover and add middleware from "
+            "Python entrypoints in the 'jupyter_server_mcp.middleware' group"
+        ),
+    ).tag(config=True)
+
     mcp_server_instance: object | None = None
     mcp_server_task: asyncio.Task | None = None
     mcp_shutdown_timeout = 5
@@ -217,6 +236,44 @@ class MCPExtensionApp(ExtensionApp):
 
         return discovered_tools
 
+    def _add_middleware(
+        self, middleware_specs: list[str], source: str = "configuration"
+    ):
+        """Add middleware from a list of specifications.
+
+        Args:
+            middleware_specs: List of specifications in 'module:factory' format
+            source: Description of where the middleware came from (for logging)
+        """
+        for spec in middleware_specs:
+            try:
+                factory = self._load_function_from_string(spec)
+                self.mcp_server_instance.add_middleware(factory())
+                logger.info(f"✅ Added middleware from {source}: {spec}")
+            except Exception as e:  # noqa: BLE001
+                logger.error(f"❌ Failed to add middleware '{spec}' from {source}: {e}")
+
+    def _discover_entrypoint_middleware(self) -> list[str]:
+        """Discover middleware from Python entrypoints in the 'jupyter_server_mcp.middleware' group.
+
+        Returns:
+            List of middleware specifications in 'module:factory' format
+        """
+        if not self.use_middleware_discovery:
+            return []
+
+        try:
+            entrypoints = importlib.metadata.entry_points(
+                group="jupyter_server_mcp.middleware"
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"Failed to discover middleware entrypoints: {e}")
+            return []
+
+        specs = [entry_point.value for entry_point in entrypoints]
+        logger.info(f"Discovered {len(specs)} middleware from entrypoints")
+        return specs
+
     def initialize(self):
         """Initialize the extension."""
         super().initialize()
@@ -295,6 +352,12 @@ class MCPExtensionApp(ExtensionApp):
             self.mcp_server_instance = MCPServer(
                 parent=self, name=self.mcp_name, port=self.mcp_port
             )
+
+            # Add middleware from entrypoints, then from configuration
+            self._add_middleware(
+                self._discover_entrypoint_middleware(), source="entrypoints"
+            )
+            self._add_middleware(self.mcp_middleware, source="configuration")
 
             # Register tools from entrypoints, then from configuration
             entrypoint_tools = self._discover_entrypoint_tools()

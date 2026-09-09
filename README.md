@@ -371,6 +371,8 @@ Jupyter Server extension that manages the MCP server lifecycle:
 - `mcp_port` - Server port (default: 3001). Set to 0 to let the OS pick a free port — useful when running multiple servers side by side.
 - `mcp_tools` - List of tools to register (format: "module:function")
 - `use_tool_discovery` - Enable automatic tool discovery via entrypoints (default: True)
+- `mcp_middleware` - List of middleware to add (format: "module:factory")
+- `use_middleware_discovery` - Enable automatic middleware discovery via entrypoints (default: True)
 
 ### Tool Registration
 
@@ -419,6 +421,29 @@ Tools from entrypoints are discovered automatically when the extension starts. T
 
 ```python
 c.MCPExtensionApp.use_tool_discovery = False
+```
+
+### Middleware
+
+[FastMCP middleware](https://gofastmcp.com/servers/middleware) runs around every request to the MCP server, for example to read request headers before a tool call. Middleware is added the same two ways as tools. Each specification names a factory called without arguments that returns the middleware; a `Middleware` subclass works as is.
+
+**Manual configuration:**
+
+```python
+c.MCPExtensionApp.mcp_middleware = ["my_package.middleware:LoggingMiddleware"]
+```
+
+**Automatic discovery via the `jupyter_server_mcp.middleware` entrypoint group:**
+
+```toml
+[project.entry-points."jupyter_server_mcp.middleware"]
+my_package = "my_package.middleware:LoggingMiddleware"
+```
+
+To disable automatic discovery:
+
+```python
+c.MCPExtensionApp.use_middleware_discovery = False
 ```
 
 ## Configuration Examples

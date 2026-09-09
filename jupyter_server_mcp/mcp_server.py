@@ -17,12 +17,11 @@ from typing import Any, Union, get_args, get_origin
 import uvicorn
 from fastmcp import FastMCP
 from fastmcp import settings as fastmcp_settings
+from fastmcp.server.middleware import Middleware
 from fastmcp.utilities.cli import log_server_banner
 from traitlets import Bool, Enum, Int, List, Unicode
 from traitlets import Union as UnionTrait
 from traitlets.config.configurable import LoggingConfigurable
-
-from .client_routing import ClientRoutingMiddleware
 
 logger = logging.getLogger(__name__)
 
@@ -319,17 +318,16 @@ class MCPServer(LoggingConfigurable):
 
         # Initialize FastMCP and tools registry
         self.mcp = FastMCP(self.name)
-        # Route JupyterLab frontend commands to the web client that triggered
-        # the call (see client_routing.ClientRoutingMiddleware). Hard-wired, but
-        # a safe no-op unless jupyterlab-commands-toolkit is installed and the
-        # persona manager has attached identity headers.
-        self.mcp.add_middleware(ClientRoutingMiddleware())
         self._registered_tools = {}
         self._uvicorn_server: uvicorn.Server | None = None
         self._bound_event: asyncio.Event = asyncio.Event()
         self.log.info(
             f"Initialized MCP server '{self.name}' on {self.host}:{self.port}"
         )
+
+    def add_middleware(self, middleware: Middleware) -> None:
+        """Add a FastMCP middleware, run around every request to this server."""
+        self.mcp.add_middleware(middleware)
 
     def register_tool(
         self,
