@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 import uvicorn
+from fastmcp.server.middleware import Middleware
 
 from jupyter_server_mcp.mcp_server import (
     MCPServer,
@@ -86,6 +87,14 @@ class TestMCPServer:
         assert server.port == 3050
         assert server.host == "0.0.0.0"
         assert server.mcp is not None
+
+    def test_add_middleware(self, mcp_server_simple):
+        """Test adding a middleware to the server."""
+        middleware = Middleware()
+
+        mcp_server_simple.add_middleware(middleware)
+
+        assert middleware in mcp_server_simple.mcp.middleware
 
     def test_register_single_tool(self):
         """Test registering a single tool."""

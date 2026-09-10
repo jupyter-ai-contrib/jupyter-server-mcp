@@ -7,6 +7,7 @@ import os
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
+from fastmcp.server.middleware import Middleware
 
 from jupyter_server_mcp import proxy, runtime
 from jupyter_server_mcp.extension import MCPExtensionApp, _connect_host, _url_host
@@ -797,3 +798,62 @@ class TestConnectHost:
     )
     def test_url_host_formats_ipv6_literals(self, host, expected):
         assert _url_host(host) == expected
+
+
+def _make_middleware():
+    """Factory used by the middleware loading tests."""
+    return Middleware()
+
+
+class TestMiddlewareLoading:
+    """Test middleware discovery and loading."""
+
+    def test_discover_entrypoint_middleware(self):
+        """Test that discovery returns the entrypoint values as specifications."""
+        extension = MCPExtensionApp()
+
+        mock_ep = Mock()
+        mock_ep.name = "package1"
+        mock_ep.value = "package1.middleware:LoggingMiddleware"
+
+        with patch("importlib.metadata.entry_points") as mock_ep_func:
+            mock_ep_func.return_value = [mock_ep]
+
+            specs = extension._discover_entrypoint_middleware()
+            assert specs == ["package1.middleware:LoggingMiddleware"]
+            mock_ep_func.assert_called_once_with(group="jupyter_server_mcp.middleware")
+
+    def test_discover_entrypoint_middleware_disabled(self):
+        """Test that discovery can be disabled."""
+        extension = MCPExtensionApp()
+        extension.use_middleware_discovery = False
+
+        with patch("importlib.metadata.entry_points") as mock_ep_func:
+            assert extension._discover_entrypoint_middleware() == []
+            mock_ep_func.assert_not_called()
+
+    def test_add_middleware(self):
+        """Test that a middleware factory is called and its result added."""
+        extension = MCPExtensionApp()
+        extension.mcp_server_instance = Mock()
+
+        extension._add_middleware(["tests.test_extension:_make_middleware"])
+
+        extension.mcp_server_instance.add_middleware.assert_called_once()
+        (middleware,), _ = extension.mcp_server_instance.add_middleware.call_args
+        assert isinstance(middleware, Middleware)
+
+    def test_add_middleware_with_errors(self):
+        """Test that an invalid specification is skipped."""
+        extension = MCPExtensionApp()
+        extension.mcp_server_instance = Mock()
+
+        extension._add_middleware(
+            [
+                "not_a_spec",
+                "nonexistent.module:factory",
+                "tests.test_extension:_make_middleware",
+            ]
+        )
+
+        extension.mcp_server_instance.add_middleware.assert_called_once()
