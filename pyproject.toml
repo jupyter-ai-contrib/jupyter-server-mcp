@@ -23,18 +23,9 @@ classifiers = [
 
 dependencies = [
     "jupyter_server>=1.6,<3",
-    # 3.4.3 introduced FastMCP's Host/Origin request guard, but shipped it on
-    # by default and broke HTTP/proxy deployments; 3.4.4 stabilized the guard
-    # (relaxed defaults + restored compatibility). We rely on its
-    # ``host_origin_protection`` / ``allowed_hosts`` / ``allowed_origins``
-    # arguments to ``http_app``.
-    #
-    # Cap below 4.0: fastmcp 4.0.0 (2026-08-31) is a major with breaking
-    # changes and raises its own mcp floor to >=2.0 (via fastmcp-slim), whereas
-    # 3.4.x pins mcp<2.0. We have not yet verified jupyter-server-mcp against
-    # fastmcp 4.x / mcp 2.x, so hold at 3.x until we do. This also keeps the
-    # transitive mcp SDK on the 1.x API that downstream clients still use.
-    "fastmcp>=3.4.4,<4"
+    # >=3.4.4 for the Host/Origin arguments of ``http_app``. 3.4.x (mcp 1.x)
+    # stays in range so we co-install with packages that still pin mcp<2.
+    "fastmcp>=3.4.4,<5"
 ]
 
 [project.optional-dependencies]
