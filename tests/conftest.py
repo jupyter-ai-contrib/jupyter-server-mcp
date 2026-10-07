@@ -27,6 +27,17 @@ def temp_dir():
 
 
 @pytest.fixture
+def socket_dir():
+    """Create a private directory for Unix sockets.
+
+    It lives under /tmp because ``tmp_path`` can exceed the socket path limit
+    (104 bytes on macOS).
+    """
+    with tempfile.TemporaryDirectory(dir="/tmp") as tmpdir:
+        yield Path(tmpdir)
+
+
+@pytest.fixture
 def mcp_extension():
     """Create an MCP extension instance for testing."""
     extension = MCPExtensionApp()

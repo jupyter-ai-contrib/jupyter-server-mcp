@@ -9,9 +9,10 @@ import logging
 import os
 import socket
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from functools import wraps
 from inspect import iscoroutinefunction, signature
+from pathlib import Path
 from typing import Any, Union, get_args, get_origin
 
 import uvicorn
@@ -19,7 +20,7 @@ from fastmcp import FastMCP
 from fastmcp import settings as fastmcp_settings
 from fastmcp.server.middleware import Middleware
 from fastmcp.utilities.cli import log_server_banner
-from traitlets import Bool, Enum, Int, List, Unicode
+from traitlets import Bool, Enum, Int, List, TraitError, Unicode, validate
 from traitlets import Union as UnionTrait
 from traitlets.config.configurable import LoggingConfigurable
 
@@ -27,7 +28,7 @@ logger = logging.getLogger(__name__)
 
 
 class MCPServerPortError(RuntimeError):
-    """Raised when the configured MCP server port cannot be bound."""
+    """Raised when the configured MCP server port or socket cannot be bound."""
 
 
 class _EmbeddedUvicornServer(uvicorn.Server):
@@ -94,6 +95,57 @@ def _ensure_port_available(host: str, port: int) -> None:
             "--MCPExtensionApp.mcp_port=<port>."
         )
         raise MCPServerPortError(msg) from exc
+
+
+@contextlib.contextmanager
+def _private_unix_socket(path: str) -> Iterator[socket.socket]:
+    """Listen on a Unix domain socket that only the current user can use.
+
+    The socket is restricted to mode 0600 before it starts listening, so no
+    other user can connect, even briefly. An exclusive lock on
+    ``<path>.lock``, held until the socket is removed, keeps two servers from
+    claiming the same path at once. A stale socket file left by a server that
+    is no longer running is replaced, but a live one is not. On exit, the
+    socket file is removed only if it is still the one created here.
+    """
+    # Imported here because these modules are unavailable on Windows.
+    import fcntl  # noqa: PLC0415
+
+    from jupyter_server.utils import unix_socket_in_use  # noqa: PLC0415
+    from tornado.netutil import bind_unix_socket  # noqa: PLC0415
+
+    def error(reason) -> MCPServerPortError:
+        msg = f"Cannot start MCP server on {path}: {reason}"
+        return MCPServerPortError(msg)
+
+    in_use = "the socket is already in use."
+    try:
+        lock_fd = os.open(f"{path}.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    except OSError as exc:
+        raise error(exc) from exc
+    try:
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise error(in_use) from None
+        # The lock rules out other servers like this one, but not other programs.
+        if unix_socket_in_use(path):
+            raise error(in_use)
+        try:
+            sock = bind_unix_socket(path, mode=0o600)
+        except (OSError, ValueError) as exc:
+            raise error(exc) from exc
+        bound = Path(path).stat()
+        try:
+            yield sock
+        finally:
+            sock.close()
+            with contextlib.suppress(FileNotFoundError):
+                current = Path(path).stat()
+                if (current.st_dev, current.st_ino) == (bound.st_dev, bound.st_ino):
+                    Path(path).unlink()
+    finally:
+        os.close(lock_fd)
 
 
 def _is_dict_compatible_annotation(annotation) -> bool:
@@ -268,6 +320,35 @@ class MCPServer(LoggingConfigurable):
         default_value="localhost", help="Host for the MCP server to listen on"
     ).tag(config=True)
 
+    uds = Unicode(
+        default_value=None,
+        allow_none=True,
+        help=(
+            "Path of a Unix domain socket for the MCP server to listen on "
+            "instead of a TCP port. When set, ``host`` and ``port`` are "
+            "ignored. The socket is created with mode 0600, so only the user "
+            "running Jupyter Server can connect. Put it in a directory that "
+            "only that user can write to. A relative path is made absolute, "
+            "and a ``<path>.lock`` file next to the socket keeps two servers "
+            "from using it at once. Clients connect with the stdio proxy "
+            "(``python -m jupyter_server_mcp.proxy --uds <path>``)."
+        ),
+    ).tag(config=True)
+
+    @validate("uds")
+    def _validate_uds(self, proposal):
+        path = proposal["value"]
+        # Validation also runs for an explicit None, which means TCP.
+        if path is None:
+            return None
+        if "\0" in path:
+            # Linux abstract socket addresses have no file permissions, so any
+            # user could connect.
+            msg = "MCP server socket paths must not contain NUL characters."
+            raise TraitError(msg)
+        # Resolve once, so clients find the socket whatever their directory.
+        return str(Path(path).absolute())
+
     host_origin_protection = UnionTrait(
         [Bool(), Enum(["auto"])],
         default_value=True,
@@ -321,9 +402,8 @@ class MCPServer(LoggingConfigurable):
         self._registered_tools = {}
         self._uvicorn_server: uvicorn.Server | None = None
         self._bound_event: asyncio.Event = asyncio.Event()
-        self.log.info(
-            f"Initialized MCP server '{self.name}' on {self.host}:{self.port}"
-        )
+        address = self.uds or f"{self.host}:{self.port}"
+        self.log.info(f"Initialized MCP server '{self.name}' on {address}")
 
     def add_middleware(self, middleware: Middleware) -> None:
         """Add a FastMCP middleware, run around every request to this server."""
@@ -439,32 +519,44 @@ class MCPServer(LoggingConfigurable):
             app,
             host=host,
             port=port,
+            uds=self.uds,
             timeout_graceful_shutdown=2,
             lifespan="on",
             ws="websockets-sansio",
             log_level=fastmcp_settings.log_level.lower(),
         )
-        server = _EmbeddedUvicornServer(
-            config, on_startup_complete=self._capture_bound_port
+        # Bind the socket here rather than through uvicorn, which makes it
+        # world-accessible (mode 0666).
+        listener = (
+            _private_unix_socket(self.uds) if self.uds else contextlib.nullcontext()
         )
-        self._uvicorn_server = server
-        path = getattr(app.state, "path", "").lstrip("/")
-        self.log.info(
-            f"Starting MCP server {self.name!r} with transport "
-            f"{transport!r} on http://{host}:{port}/{path}"
-        )
+        with listener as sock:
+            server = _EmbeddedUvicornServer(
+                config, on_startup_complete=self._capture_bound_port
+            )
+            self._uvicorn_server = server
+            path = getattr(app.state, "path", "").lstrip("/")
+            location = (
+                f"/{path} on unix socket {self.uds}"
+                if self.uds
+                else f"http://{host}:{port}/{path}"
+            )
+            self.log.info(
+                f"Starting MCP server {self.name!r} with transport "
+                f"{transport!r} on {location}"
+            )
 
-        try:
-            await server.serve()
-        except asyncio.CancelledError:
-            server.should_exit = True
-            if getattr(server, "started", False):
-                with contextlib.suppress(Exception, asyncio.CancelledError):
-                    await server.shutdown()
-            raise
-        finally:
-            if self._uvicorn_server is server:
-                self._uvicorn_server = None
+            try:
+                await server.serve(sockets=[sock] if sock else None)
+            except asyncio.CancelledError:
+                server.should_exit = True
+                if getattr(server, "started", False):
+                    with contextlib.suppress(Exception, asyncio.CancelledError):
+                        await server.shutdown()
+                raise
+            finally:
+                if self._uvicorn_server is server:
+                    self._uvicorn_server = None
 
     async def stop_server(self) -> None:
         """Request a graceful MCP HTTP server shutdown."""
@@ -481,7 +573,8 @@ class MCPServer(LoggingConfigurable):
     async def start_server(self, host: str | None = None):
         """Start the MCP server on the specified host and port."""
         server_host = host or self.host
-        _ensure_port_available(server_host, self.port)
+        if not self.uds:
+            _ensure_port_available(server_host, self.port)
 
         self.log.info(f"Registered tools: {list(self._registered_tools.keys())}")
 

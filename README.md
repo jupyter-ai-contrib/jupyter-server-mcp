@@ -105,6 +105,29 @@ Any trait can also be set on the command line:
 jupyter lab --MCPExtensionApp.mcp_port=8080
 ```
 
+#### Shared machines: listen on a Unix domain socket
+
+The MCP server does not authenticate clients. On a TCP port, any user on the
+same machine can connect to it and run its tools as you. On shared machines
+such as HPC login or compute nodes, have it listen on a Unix domain socket
+instead:
+
+```python
+c.MCPExtensionApp.mcp_uds = "/path/to/private/dir/mcp.sock"
+```
+
+The socket is created with mode 0600, so only your user can connect, and no TCP
+port is opened. Put it in a directory that only you can write to, for example
+one made by `mktemp -d`, and keep the path short: socket paths are limited to
+about 100 characters. A relative path is made absolute. An `mcp.sock.lock` file
+next to the socket keeps two servers from using it at once; it is left in place
+when the server stops.
+
+MCP clients connect through the stdio proxy with `--uds`, or with no
+arguments, since auto-discovery reads the socket path from the runtime info
+file. Proxies older than this option find no URL in that file and stop rather
+than connect over TCP.
+
 ### 3. CLI MCP Client Configuration
 
 There are two supported ways to wire an MCP client to this extension:
@@ -221,6 +244,7 @@ need to match the server side exactly.
 The proxy accepts a few optional arguments (append them to `args`):
 
 - `--url URL` — bypass auto-discovery and connect to an explicit MCP endpoint
+- `--uds PATH` — bypass auto-discovery and connect through the server's Unix domain socket (see `mcp_uds`)
 - `--runtime-dir DIR` — look in a specific Jupyter runtime directory
 - `--cwd DIR` — use a different directory when disambiguating between servers
 
@@ -369,6 +393,7 @@ Jupyter Server extension that manages the MCP server lifecycle:
 **Configuration Traits:**
 - `mcp_name` - Server name (default: "Jupyter MCP Server")
 - `mcp_port` - Server port (default: 3001). Set to 0 to let the OS pick a free port — useful when running multiple servers side by side.
+- `mcp_uds` - Path of a Unix domain socket to listen on instead of a TCP port (default: None), so that only your user can connect
 - `mcp_tools` - List of tools to register (format: "module:function")
 - `use_tool_discovery` - Enable automatic tool discovery via entrypoints (default: True)
 - `mcp_middleware` - List of middleware to add (format: "module:factory")

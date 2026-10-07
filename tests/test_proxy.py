@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
+import socket
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from fastmcp import Client
+from fastmcp.client.transports import StreamableHttpTransport
 
 from jupyter_server_mcp import proxy, runtime
+from jupyter_server_mcp.mcp_server import MCPServer
 
 
 @pytest.fixture
@@ -40,42 +46,69 @@ def _publish_server(
     )
 
 
-class TestResolveUrl:
-    """Tests for ``resolve_url``."""
+class TestResolveEndpoint:
+    """Tests for ``resolve_endpoint``."""
 
     def test_explicit_url_wins(self, isolated_runtime_dir):
         """An explicit URL short-circuits discovery."""
-        url = proxy.resolve_url(
+        endpoint = proxy.resolve_endpoint(
             url="http://explicit:9999/mcp",
             runtime_dir=str(isolated_runtime_dir),
             cwd=str(isolated_runtime_dir),
         )
-        assert url == "http://explicit:9999/mcp"
+        assert endpoint == ("http://explicit:9999/mcp", None)
 
     def test_env_var_wins(self, isolated_runtime_dir, monkeypatch):
         """The env var is honored when no explicit URL is passed."""
         monkeypatch.setenv(proxy.ENV_URL, "http://env:1234/mcp")
-        url = proxy.resolve_url(
+        endpoint = proxy.resolve_endpoint(
             runtime_dir=str(isolated_runtime_dir),
             cwd=str(isolated_runtime_dir),
         )
-        assert url == "http://env:1234/mcp"
+        assert endpoint == ("http://env:1234/mcp", None)
 
     def test_single_server_discovery(self, isolated_runtime_dir):
         """A single running server is selected automatically."""
         _publish_server(isolated_runtime_dir, 101, root_dir=isolated_runtime_dir)
 
-        url = proxy.resolve_url(
+        endpoint = proxy.resolve_endpoint(
             runtime_dir=str(isolated_runtime_dir),
             cwd=str(isolated_runtime_dir),
         )
 
-        assert url == "http://localhost:3001/mcp"
+        assert endpoint == ("http://localhost:3001/mcp", None)
+
+    def test_explicit_uds_uses_localhost_url(self, isolated_runtime_dir):
+        """``--uds`` short-circuits discovery and needs no URL."""
+        endpoint = proxy.resolve_endpoint(
+            uds="/run/mcp.sock",
+            runtime_dir=str(isolated_runtime_dir),
+            cwd=str(isolated_runtime_dir),
+        )
+        assert endpoint == (proxy.UDS_URL, "/run/mcp.sock")
+
+    def test_unix_socket_server_discovery(self, isolated_runtime_dir):
+        """A discovered server on a Unix socket is reached through it."""
+        runtime.write_info_file(
+            runtime.info_file_path(isolated_runtime_dir, 301),
+            {
+                "pid": 301,
+                "uds": "/run/mcp.sock",
+                "root_dir": str(isolated_runtime_dir),
+            },
+        )
+
+        endpoint = proxy.resolve_endpoint(
+            runtime_dir=str(isolated_runtime_dir),
+            cwd=str(isolated_runtime_dir),
+        )
+
+        assert endpoint == (proxy.UDS_URL, "/run/mcp.sock")
 
     def test_no_servers_raises(self, isolated_runtime_dir):
         """An empty runtime directory produces a helpful error."""
         with pytest.raises(proxy.ProxyError, match="No running Jupyter MCP servers"):
-            proxy.resolve_url(
+            proxy.resolve_endpoint(
                 runtime_dir=str(isolated_runtime_dir),
                 cwd=str(isolated_runtime_dir),
             )
@@ -89,7 +122,7 @@ class TestResolveUrl:
         )
 
         with pytest.raises(proxy.ProxyError, match="has no URL"):
-            proxy.resolve_url(
+            proxy.resolve_endpoint(
                 runtime_dir=str(isolated_runtime_dir),
                 cwd=str(isolated_runtime_dir),
             )
@@ -113,7 +146,7 @@ class TestResolveUrl:
             url = value
 
         with pytest.raises(proxy.ProxyError, match=match):
-            proxy.resolve_url(
+            proxy.resolve_endpoint(
                 url=url,
                 runtime_dir=str(isolated_runtime_dir),
                 cwd=str(isolated_runtime_dir),
@@ -128,17 +161,17 @@ class TestResolveUrl:
         _publish_server(isolated_runtime_dir, 201, root_dir=root_a, port=3101)
         _publish_server(isolated_runtime_dir, 202, root_dir=root_b, port=3102)
 
-        url_a = proxy.resolve_url(
+        endpoint_a = proxy.resolve_endpoint(
             runtime_dir=str(isolated_runtime_dir),
             cwd=str(root_a),
         )
-        url_b = proxy.resolve_url(
+        endpoint_b = proxy.resolve_endpoint(
             runtime_dir=str(isolated_runtime_dir),
             cwd=str(root_b),
         )
 
-        assert url_a == "http://localhost:3101/mcp"
-        assert url_b == "http://localhost:3102/mcp"
+        assert endpoint_a == ("http://localhost:3101/mcp", None)
+        assert endpoint_b == ("http://localhost:3102/mcp", None)
 
 
 class TestSelectServer:
@@ -221,18 +254,30 @@ class TestMainCLI:
         """An explicit URL should trigger ``run_proxy`` without discovery."""
         calls = []
 
-        async def fake_run_proxy(url):
-            calls.append(url)
+        async def fake_run_proxy(url, uds=None):
+            calls.append((url, uds))
 
         monkeypatch.setattr(proxy, "run_proxy", fake_run_proxy)
 
         assert proxy.main(["--url", "http://explicit:1/mcp"]) == 0
-        assert calls == ["http://explicit:1/mcp"]
+        assert calls == [("http://explicit:1/mcp", None)]
+
+    def test_main_connects_with_explicit_uds(self, monkeypatch):
+        """``--uds`` should be passed through to ``run_proxy``."""
+        calls = []
+
+        async def fake_run_proxy(url, uds=None):
+            calls.append((url, uds))
+
+        monkeypatch.setattr(proxy, "run_proxy", fake_run_proxy)
+
+        assert proxy.main(["--uds", "/run/mcp.sock"]) == 0
+        assert calls == [(proxy.UDS_URL, "/run/mcp.sock")]
 
     def test_main_treats_keyboard_interrupt_as_success(self, monkeypatch):
         """KeyboardInterrupt while proxying should be a clean shutdown."""
 
-        async def raise_kbi(_url):
+        async def raise_kbi(_url, _uds=None):
             raise KeyboardInterrupt
 
         monkeypatch.setattr(proxy, "run_proxy", raise_kbi)
@@ -257,3 +302,52 @@ class TestRunProxy:
         fake_proxy.run_async.assert_awaited_once_with(
             transport="stdio", show_banner=False
         )
+
+    @pytest.mark.asyncio
+    async def test_run_proxy_connects_through_uds(self):
+        """With a socket, ``run_proxy`` should proxy a UDS-backed transport."""
+        fake_proxy = AsyncMock()
+
+        with patch(
+            "jupyter_server_mcp.proxy.create_proxy", return_value=fake_proxy
+        ) as create:
+            await proxy.run_proxy(proxy.UDS_URL, "/run/mcp.sock")
+
+        (transport,), _ = create.call_args
+        assert isinstance(transport, StreamableHttpTransport)
+        assert transport.url == proxy.UDS_URL
+
+    def test_uds_client_keeps_mcp_default_timeout(self):
+        """The UDS client must not fall back to httpx's 5 second read timeout."""
+        transport = proxy._uds_transport(proxy.UDS_URL, "/run/mcp.sock")
+
+        client = transport.httpx_client_factory(
+            headers=None, auth=None, follow_redirects=True
+        )
+
+        assert client.timeout.read == 300.0
+
+
+def add(x: int, y: int) -> int:
+    """Add two numbers."""
+    return x + y
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not hasattr(socket, "AF_UNIX"), reason="needs Unix sockets")
+@pytest.mark.asyncio
+async def test_uds_transport_calls_server_tools(socket_dir):
+    """The proxy's UDS transport reaches a real server's tools."""
+    path = str(socket_dir / "mcp.sock")
+    server = MCPServer(uds=path)
+    server.register_tool(add)
+    task = asyncio.create_task(server.start_server())
+    try:
+        await server.wait_until_bound(timeout=5.0)
+        async with Client(proxy._uds_transport(proxy.UDS_URL, path)) as client:
+            result = await client.call_tool("add", {"x": 2, "y": 3})
+        assert result.data == 5
+    finally:
+        await server.stop_server()
+        with contextlib.suppress(asyncio.CancelledError):
+            await asyncio.wait_for(task, timeout=5.0)

@@ -5,18 +5,22 @@ import contextlib
 import errno
 import signal
 import socket
+import stat
+from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 import uvicorn
 from fastmcp.server.middleware import Middleware
+from traitlets import TraitError
 
 from jupyter_server_mcp.mcp_server import (
     MCPServer,
     MCPServerPortError,
     _EmbeddedUvicornServer,
     _ensure_port_available,
+    _private_unix_socket,
     _wrap_with_json_conversion,
 )
 
@@ -401,6 +405,36 @@ class TestMCPServer:
         )
 
     @pytest.mark.asyncio
+    async def test_start_server_skips_port_check_for_uds(self, monkeypatch):
+        """A server on a Unix socket does not need its TCP port to be free."""
+        server = MCPServer(port=3001, uds="/tmp/mcp.sock")
+        server._run_http_async_without_signals = AsyncMock()
+        port_check = Mock()
+        monkeypatch.setattr(
+            "jupyter_server_mcp.mcp_server._ensure_port_available", port_check
+        )
+
+        await server.start_server()
+
+        port_check.assert_not_called()
+        server._run_http_async_without_signals.assert_called_once()
+
+    def test_uds_path_is_made_absolute(self, tmp_path, monkeypatch):
+        """A relative socket path must not depend on the working directory."""
+        monkeypatch.chdir(tmp_path)
+
+        assert MCPServer(uds="mcp.sock").uds == str(tmp_path / "mcp.sock")
+
+    def test_explicit_none_uds_means_tcp(self):
+        """``uds=None``, as the extension passes by default, keeps TCP."""
+        assert MCPServer(uds=None).uds is None
+
+    def test_uds_rejects_abstract_addresses(self):
+        """Abstract socket addresses have no file permissions to restrict them."""
+        with pytest.raises(TraitError, match="NUL"):
+            MCPServer(uds="\0jupyter-mcp")
+
+    @pytest.mark.asyncio
     async def test_stop_server_requests_uvicorn_exit(self):
         """Test that graceful shutdown asks the embedded Uvicorn server to exit."""
         server = MCPServer()
@@ -513,11 +547,14 @@ class TestEphemeralPortIntegration:
                 await asyncio.wait_for(task, timeout=5.0)
 
 
-def _raw_http_post(port: int, host_header: str, origin: str | None = None):
+def _raw_http_post(
+    port: int, host_header: str, origin: str | None = None, *, uds: str | None = None
+):
     """Send a crafted HTTP POST to the MCP endpoint and return the status code.
 
     Uses a raw socket so the ``Host`` header can be set to an arbitrary value
     (which higher-level clients derive from the URL and will not let us forge).
+    Connects to ``uds`` instead of ``port`` when given.
     """
     body = (
         b'{"jsonrpc":"2.0","id":1,"method":"initialize","params":'
@@ -536,9 +573,10 @@ def _raw_http_post(port: int, host_header: str, origin: str | None = None):
         lines.insert(2, f"Origin: {origin}")
     request = ("\r\n".join(lines) + "\r\n\r\n").encode("ascii") + body
 
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+    family = socket.AF_UNIX if uds else socket.AF_INET
+    with socket.socket(family, socket.SOCK_STREAM) as sock:
         sock.settimeout(5.0)
-        sock.connect(("127.0.0.1", port))
+        sock.connect(uds or ("127.0.0.1", port))
         sock.sendall(request)
         status_line = b""
         while b"\r\n" not in status_line:
@@ -606,6 +644,102 @@ class TestHostOriginProtection:
             await server.stop_server()
             with contextlib.suppress(asyncio.CancelledError):
                 await asyncio.wait_for(task, timeout=5.0)
+
+
+@contextlib.asynccontextmanager
+async def _running(server: MCPServer):
+    """Run ``server`` until the block exits."""
+    task = asyncio.create_task(server.start_server())
+    try:
+        await server.wait_until_bound(timeout=5.0)
+        yield server
+    finally:
+        await server.stop_server()
+        with contextlib.suppress(asyncio.CancelledError):
+            await asyncio.wait_for(task, timeout=5.0)
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not hasattr(socket, "AF_UNIX"), reason="needs Unix sockets")
+class TestUnixSocket:
+    """Serve the MCP endpoint on a Unix domain socket."""
+
+    @pytest.mark.asyncio
+    async def test_socket_is_private_and_removed_on_stop(self, socket_dir):
+        """The socket is owner-only, keeps Host protection, and is cleaned up."""
+        sock_path = socket_dir / "mcp.sock"
+        path = str(sock_path)
+
+        async with _running(MCPServer(uds=path)):
+            assert stat.S_IMODE(sock_path.stat().st_mode) == 0o600
+
+            legit = await asyncio.to_thread(_raw_http_post, 0, "localhost", uds=path)
+            assert legit not in (403, 421)
+
+            rebind = await asyncio.to_thread(
+                _raw_http_post, 0, "attacker.com", uds=path
+            )
+            assert rebind == 421
+
+        assert not sock_path.exists()
+
+    @pytest.mark.asyncio
+    async def test_socket_in_use_is_not_replaced(self, socket_dir):
+        """A second server must not take over a live socket."""
+        path = str(socket_dir / "mcp.sock")
+
+        async with _running(MCPServer(uds=path)):
+            with pytest.raises(MCPServerPortError, match="already in use"):
+                await MCPServer(uds=path).start_server()
+
+            status = await asyncio.to_thread(_raw_http_post, 0, "localhost", uds=path)
+            assert status not in (403, 421)
+
+    @pytest.mark.asyncio
+    async def test_stale_socket_is_replaced(self, socket_dir):
+        """A socket file left behind by a dead server does not block startup."""
+        path = str(socket_dir / "mcp.sock")
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as stale:
+            stale.bind(path)
+
+        async with _running(MCPServer(uds=path)):
+            status = await asyncio.to_thread(_raw_http_post, 0, "localhost", uds=path)
+            assert status not in (403, 421)
+
+    def test_lock_refuses_second_server_when_probe_misses(
+        self, socket_dir, monkeypatch
+    ):
+        """Two servers starting at once must not both claim the path."""
+        path = str(socket_dir / "mcp.sock")
+
+        with _private_unix_socket(path) as first:
+            # Simulate both servers probing before either one has bound.
+            monkeypatch.setattr(
+                "jupyter_server.utils.unix_socket_in_use", lambda _path: False
+            )
+            with (
+                pytest.raises(MCPServerPortError, match="already in use"),
+                _private_unix_socket(path),
+            ):
+                pass
+
+            assert Path(path).exists()
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+                client.connect(path)
+                assert first.accept()
+
+    def test_socket_replaced_by_another_server_is_kept(self, socket_dir):
+        """Cleanup must not remove a socket file that another server created."""
+        sock_path = socket_dir / "mcp.sock"
+
+        with (
+            _private_unix_socket(str(sock_path)),
+            socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as replacement,
+        ):
+            sock_path.unlink()
+            replacement.bind(str(sock_path))
+
+        assert sock_path.exists()
 
 
 class TestJSONArgumentConversion:
