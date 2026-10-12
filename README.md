@@ -112,7 +112,7 @@ There are two supported ways to wire an MCP client to this extension:
 1. **Stdio proxy (recommended)** — the client launches a small stdio proxy (`jupyter-server-mcp-proxy` or `python -m jupyter_server_mcp.proxy`), which auto-discovers the running Jupyter MCP server and bridges stdio to its HTTP endpoint. This keeps working unchanged when multiple Jupyter servers run side-by-side or when `mcp_port = 0` picks a different port each run.
 2. **Direct HTTP** — point the client at `http://localhost:3001/mcp` (or whichever port you configured). Works well when you run a single Jupyter server on a stable port.
 
-When multiple Jupyter servers are running on the same machine, the stdio proxy picks the one whose Jupyter root directory is the most specific ancestor of the MCP client's current working directory. If no server's root directory contains that working directory, or if several tie, the proxy refuses to guess and asks you to disambiguate with `--url` or by setting `JUPYTER_SERVER_MCP_URL`.
+The stdio proxy connects to the Jupyter server whose root directory is the most specific ancestor of the MCP client's current working directory, so a coding agent started in a project folder talks to the Jupyter server that serves that folder. The rule also applies when only one server is running: if no server's root directory contains the working directory, or if several tie, the proxy refuses to guess and exits with an error listing the running servers. Start the agent inside a folder a server serves, start a Jupyter server in that folder, or pick a server explicitly with `--url` or by setting `JUPYTER_SERVER_MCP_URL`.
 
 The list below is intentionally curated rather than exhaustive and focuses on terminal-based coding agents.
 For a broader, community-maintained directory of MCP-compatible clients, see the MCP client directory: <https://modelcontextprotocol.io/clients>.
@@ -222,7 +222,7 @@ The proxy accepts a few optional arguments (append them to `args`):
 
 - `--url URL` — bypass auto-discovery and connect to an explicit MCP endpoint
 - `--runtime-dir DIR` — look in a specific Jupyter runtime directory
-- `--cwd DIR` — use a different directory when disambiguating between servers
+- `--cwd DIR` — match servers against this directory instead of the current working directory
 
 `JUPYTER_SERVER_MCP_URL` is equivalent to `--url` and takes precedence over discovery when set.
 
