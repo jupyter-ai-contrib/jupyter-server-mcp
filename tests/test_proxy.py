@@ -271,7 +271,7 @@ class TestMainCLI:
         )
 
         assert exit_code == 2
-        assert str(root) in capsys.readouterr().err
+        assert f"root_dir={str(root)!r}" in capsys.readouterr().err
 
     def test_main_connects_with_explicit_url(self, monkeypatch):
         """An explicit URL should trigger ``run_proxy`` without discovery."""
