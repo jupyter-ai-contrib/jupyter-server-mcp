@@ -63,6 +63,19 @@ class MCPExtensionApp(ExtensionApp):
         ),
     ).tag(config=True)
 
+    mcp_uds = Unicode(
+        default_value=None,
+        allow_none=True,
+        help=(
+            "Path of a Unix domain socket for the MCP server to listen on "
+            "instead of a TCP port, so that only the user running Jupyter "
+            "Server can connect. When set, mcp_port is ignored. Put the socket "
+            "in a directory that only that user can write to. MCP clients "
+            "connect through the stdio proxy "
+            "(python -m jupyter_server_mcp.proxy --uds <path>)."
+        ),
+    ).tag(config=True)
+
     mcp_name = Unicode(
         default_value="Jupyter MCP Server", help="Name for the MCP server"
     ).tag(config=True)
@@ -334,7 +347,9 @@ class MCPExtensionApp(ExtensionApp):
                     timeout=self.mcp_shutdown_timeout,
                 )
                 return
-            except TimeoutError:
+            # In python 3.10 asyncio.wait_for raised asyncio.TimeoutError;
+            # In python 3.11 asyncio.TimeoutError is a deprecated alias of TimeoutError
+            except asyncio.TimeoutError:
                 self.log.warning("Timed out waiting for MCP server to stop")
 
         self.mcp_server_task.cancel()
@@ -344,13 +359,16 @@ class MCPExtensionApp(ExtensionApp):
     async def start_extension(self):
         """Start the extension - called after Jupyter Server starts."""
         try:
-            port_desc = (
-                "an ephemeral port" if self.mcp_port == 0 else f"port {self.mcp_port}"
-            )
+            if self.mcp_uds:
+                port_desc = f"unix socket {self.mcp_uds}"
+            elif self.mcp_port == 0:
+                port_desc = "an ephemeral port"
+            else:
+                port_desc = f"port {self.mcp_port}"
             self.log.info(f"Starting MCP server '{self.mcp_name}' on {port_desc}")
 
             self.mcp_server_instance = MCPServer(
-                parent=self, name=self.mcp_name, port=self.mcp_port
+                parent=self, name=self.mcp_name, port=self.mcp_port, uds=self.mcp_uds
             )
 
             # Add middleware from entrypoints, then from configuration
@@ -373,7 +391,11 @@ class MCPExtensionApp(ExtensionApp):
 
             bound_port = getattr(self.mcp_server_instance, "port", self.mcp_port)
             registered_count = len(self.mcp_server_instance._registered_tools)
-            self.log.info(f"✅ MCP server started on port {bound_port}")
+            if self.mcp_uds:
+                uds = self.mcp_server_instance.uds
+                self.log.info(f"✅ MCP server started on unix socket {uds}")
+            else:
+                self.log.info(f"✅ MCP server started on port {bound_port}")
             self.log.info(f"Total registered tools: {registered_count}")
 
             self._publish_runtime_info()
@@ -394,21 +416,27 @@ class MCPExtensionApp(ExtensionApp):
         """Write a runtime info file so the stdio proxy can discover this server."""
         try:
             server = self.mcp_server_instance
-            bind_host = getattr(server, "host", "localhost") or "localhost"
-            port = getattr(server, "port", self.mcp_port)
             pid = os.getpid()
             path = info_file_path(jupyter_runtime_dir(), pid)
-            # The bind host can be a wildcard like "0.0.0.0" or "::" — those
-            # are valid bind addresses but not usable as connect targets.
-            url_host = _url_host(_connect_host(bind_host))
             info = {
                 "pid": pid,
-                "host": bind_host,
-                "port": port,
-                "url": f"http://{url_host}:{port}/mcp",
                 "name": self.mcp_name,
                 "root_dir": self._detect_root_dir(),
             }
+            if self.mcp_uds:
+                # The server's absolute path. There is deliberately no "url":
+                # proxies that predate "uds" then fail rather than connect to
+                # whatever listens on a TCP port.
+                info["uds"] = server.uds
+            else:
+                bind_host = getattr(server, "host", "localhost") or "localhost"
+                port = getattr(server, "port", self.mcp_port)
+                # The bind host can be a wildcard like "0.0.0.0" or "::" — those
+                # are valid bind addresses but not usable as connect targets.
+                url_host = _url_host(_connect_host(bind_host))
+                info["host"] = bind_host
+                info["port"] = port
+                info["url"] = f"http://{url_host}:{port}/mcp"
             write_info_file(path, info)
         except Exception as exc:  # noqa: BLE001
             self.log.warning(f"Could not publish MCP runtime info: {exc}")

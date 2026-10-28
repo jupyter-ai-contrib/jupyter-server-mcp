@@ -105,6 +105,29 @@ Any trait can also be set on the command line:
 jupyter lab --MCPExtensionApp.mcp_port=8080
 ```
 
+#### Shared machines: listen on a Unix domain socket
+
+The MCP server does not authenticate clients. On a TCP port, any user on the
+same machine can connect to it and run its tools as you. On shared machines
+such as HPC login or compute nodes, have it listen on a Unix domain socket
+instead:
+
+```python
+c.MCPExtensionApp.mcp_uds = "/path/to/private/dir/mcp.sock"
+```
+
+The socket is created with mode 0600, so only your user can connect, and no TCP
+port is opened. Put it in a directory that only you can write to, for example
+one made by `mktemp -d`, and keep the path short: socket paths are limited to
+about 100 characters. A relative path is made absolute. An `mcp.sock.lock` file
+next to the socket keeps two servers from using it at once; it is left in place
+when the server stops.
+
+MCP clients connect through the stdio proxy with `--uds`, or with no
+arguments, since auto-discovery reads the socket path from the runtime info
+file. Proxies older than this option find no URL in that file and stop rather
+than connect over TCP.
+
 ### 3. CLI MCP Client Configuration
 
 There are two supported ways to wire an MCP client to this extension:
@@ -112,7 +135,7 @@ There are two supported ways to wire an MCP client to this extension:
 1. **Stdio proxy (recommended)** — the client launches a small stdio proxy (`jupyter-server-mcp-proxy` or `python -m jupyter_server_mcp.proxy`), which auto-discovers the running Jupyter MCP server and bridges stdio to its HTTP endpoint. This keeps working unchanged when multiple Jupyter servers run side-by-side or when `mcp_port = 0` picks a different port each run.
 2. **Direct HTTP** — point the client at `http://localhost:3001/mcp` (or whichever port you configured). Works well when you run a single Jupyter server on a stable port.
 
-The stdio proxy connects to the Jupyter server whose root directory is the most specific ancestor of the MCP client's current working directory, so a coding agent started in a project folder talks to the Jupyter server that serves that folder. The rule also applies when only one server is running: if no server's root directory contains the working directory, or if several tie, the proxy refuses to guess and exits with an error listing the running servers. Start the agent inside a folder a server serves, start a Jupyter server in that folder, or pick a server explicitly with `--url` or by setting `JUPYTER_SERVER_MCP_URL`.
+The stdio proxy connects to the Jupyter server whose root directory is the most specific ancestor of the MCP client's current working directory, so a coding agent started in a project folder talks to the Jupyter server that serves that folder. The rule also applies when only one server is running: if no server's root directory contains the working directory, or if several tie, the proxy refuses to guess and exits with an error listing the running servers. Start the agent inside a folder a server serves, start a Jupyter server in that folder, or pick a server explicitly with `--url` or `--uds`, or by setting `JUPYTER_SERVER_MCP_URL`.
 
 The list below is intentionally curated rather than exhaustive and focuses on terminal-based coding agents.
 For a broader, community-maintained directory of MCP-compatible clients, see the MCP client directory: <https://modelcontextprotocol.io/clients>.
@@ -221,6 +244,7 @@ need to match the server side exactly.
 The proxy accepts a few optional arguments (append them to `args`):
 
 - `--url URL` — bypass auto-discovery and connect to an explicit MCP endpoint
+- `--uds PATH` — bypass auto-discovery and connect through the server's Unix domain socket (see `mcp_uds`)
 - `--runtime-dir DIR` — look in a specific Jupyter runtime directory
 - `--cwd DIR` — match servers against this directory instead of the current working directory
 
@@ -369,6 +393,7 @@ Jupyter Server extension that manages the MCP server lifecycle:
 **Configuration Traits:**
 - `mcp_name` - Server name (default: "Jupyter MCP Server")
 - `mcp_port` - Server port (default: 3001). Set to 0 to let the OS pick a free port — useful when running multiple servers side by side.
+- `mcp_uds` - Path of a Unix domain socket to listen on instead of a TCP port (default: None), so that only your user can connect
 - `mcp_tools` - List of tools to register (format: "module:function")
 - `use_tool_discovery` - Enable automatic tool discovery via entrypoints (default: True)
 - `mcp_middleware` - List of middleware to add (format: "module:factory")

@@ -33,7 +33,7 @@ async def _run_until_cancelled():
     await asyncio.Future()
 
 
-def _mock_running_server(registered_tools=None, host="localhost", port=3001):
+def _mock_running_server(registered_tools=None, host="localhost", port=3001, uds=None):
     """Create an MCP server mock whose start task stays alive."""
     mock_server = Mock()
     mock_server.start_server = AsyncMock(side_effect=_run_until_cancelled)
@@ -43,6 +43,7 @@ def _mock_running_server(registered_tools=None, host="localhost", port=3001):
     mock_server._registered_tools = [] if registered_tools is None else registered_tools
     mock_server.host = host
     mock_server.port = port
+    mock_server.uds = uds
     return mock_server
 
 
@@ -109,6 +110,7 @@ class TestMCPExtensionLifecycle:
                 parent=extension,
                 name=extension.mcp_name,
                 port=extension.mcp_port,
+                uds=None,
             )
             mock_server.start_server.assert_called_once()
 
@@ -117,6 +119,23 @@ class TestMCPExtensionLifecycle:
             assert extension.mcp_server_task is not None
             extension._confirm_mcp_server_started.assert_awaited_once()
 
+            await extension.stop_extension()
+
+    @pytest.mark.asyncio
+    async def test_default_startup_constructs_real_server(self, monkeypatch):
+        """The default config passes uds=None to a real MCPServer."""
+        monkeypatch.setattr(
+            MCPServer, "start_server", lambda _self: _run_until_cancelled()
+        )
+        extension = MCPExtensionApp()
+        extension.mcp_shutdown_timeout = 0.1
+        extension._confirm_mcp_server_started = AsyncMock()
+
+        await extension.start_extension()
+        try:
+            assert isinstance(extension.mcp_server_instance, MCPServer)
+            assert extension.mcp_server_instance.uds is None
+        finally:
             await extension.stop_extension()
 
     @pytest.mark.asyncio
@@ -413,7 +432,7 @@ class TestExtensionWithTools:
 
             # Verify server creation
             mock_mcp_class.assert_called_once_with(
-                parent=extension, name="Test Server With Tools", port=3089
+                parent=extension, name="Test Server With Tools", port=3089, uds=None
             )
 
             # Verify tools were registered
@@ -653,6 +672,36 @@ class TestRuntimeInfoPublishing:
             data = json.loads(info_path.read_text())
             assert data["host"] == bind_host
             assert data["url"] == f"http://{expected_url_host}:3084/mcp"
+
+            await extension.stop_extension()
+
+    @pytest.mark.asyncio
+    async def test_info_file_records_unix_socket(self, runtime_dir):
+        """With mcp_uds, the info file records the server's socket and no URL."""
+        extension = MCPExtensionApp()
+        extension.mcp_uds = "mcp.sock"
+
+        with patch("jupyter_server_mcp.extension.MCPServer") as mock_mcp_class:
+            # The real server makes the path absolute.
+            mock_mcp_class.return_value = _mock_running_server(
+                uds="/tmp/jupyter/mcp.sock"
+            )
+            extension._confirm_mcp_server_started = AsyncMock()
+
+            await extension.start_extension()
+
+            mock_mcp_class.assert_called_once_with(
+                parent=extension,
+                name=extension.mcp_name,
+                port=extension.mcp_port,
+                uds="mcp.sock",
+            )
+            info_path = runtime.info_file_path(runtime_dir, os.getpid())
+            data = json.loads(info_path.read_text())
+            assert data["uds"] == "/tmp/jupyter/mcp.sock"
+            # Older proxies must not find a URL to connect to over TCP.
+            assert "url" not in data
+            assert "port" not in data
 
             await extension.stop_extension()
 
