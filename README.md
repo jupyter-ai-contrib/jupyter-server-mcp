@@ -73,7 +73,6 @@ c.MCPExtensionApp.mcp_name = "My Jupyter MCP Server"
 c.MCPExtensionApp.mcp_tools = [
     # Standard library tools
     "os:getcwd",
-    "json:dumps",
     "time:time",
     
     # Jupyter AI Tools - Notebook operations  
@@ -465,13 +464,6 @@ c = get_config()
 c.MCPExtensionApp.mcp_name = "Advanced Jupyter MCP Server"
 c.MCPExtensionApp.mcp_port = 8080
 c.MCPExtensionApp.mcp_tools = [
-    # File system operations (jupyter-ai-tools)
-    "jupyter_ai_tools.toolkits.file_system:read",
-    "jupyter_ai_tools.toolkits.file_system:write", 
-    "jupyter_ai_tools.toolkits.file_system:edit",
-    "jupyter_ai_tools.toolkits.file_system:ls",
-    "jupyter_ai_tools.toolkits.file_system:glob",
-    
     # Notebook operations (jupyter-ai-tools)
     "jupyter_ai_tools.toolkits.notebook:read_notebook",
     "jupyter_ai_tools.toolkits.notebook:edit_cell",
@@ -479,21 +471,12 @@ c.MCPExtensionApp.mcp_tools = [
     "jupyter_ai_tools.toolkits.notebook:delete_cell",
     "jupyter_ai_tools.toolkits.notebook:create_notebook",
     
-    # Git operations (jupyter-ai-tools)
-    "jupyter_ai_tools.toolkits.git:git_status",
-    "jupyter_ai_tools.toolkits.git:git_add",
-    "jupyter_ai_tools.toolkits.git:git_commit",
-    "jupyter_ai_tools.toolkits.git:git_push",
-    
     # JupyterLab operations (jupyterlab-commands-toolkit)
-    "jupyterlab_commands_toolkit.tools:clear_all_outputs_in_notebook",
-    "jupyterlab_commands_toolkit.tools:open_document",
-    "jupyterlab_commands_toolkit.tools:open_markdown_file_in_preview_mode",
-    "jupyterlab_commands_toolkit.tools:show_diff_of_current_notebook",
+    "jupyterlab_commands_toolkit.tools:list_all_commands",
+    "jupyterlab_commands_toolkit.tools:execute_command",
     
     # Utility functions  
     "os:getcwd",
-    "json:dumps",
     "time:time",
     "platform:system",
 ]
@@ -503,12 +486,13 @@ c.MCPExtensionApp.mcp_tools = [
 
 ```bash
 # Install development dependencies
-pip install -e ".[dev]"
+pip install -e ".[test]"
 
 # Run tests
 pytest tests/ -v
 
 # Run with coverage
+pip install pytest-cov
 pytest --cov=jupyter_server_mcp tests/
 ```
 
@@ -527,9 +511,9 @@ jupyter_server_mcp/
 │   ├── test_extension.py  # Extension tests
 │   ├── test_proxy.py      # Stdio proxy tests
 │   └── test_runtime.py    # Runtime info-file helper tests
-├── demo/
-│   ├── jupyter_config.py  # Example configuration
-│   └── *.py              # Debug/diagnostic scripts
+├── jupyter-config/
+│   └── jupyter_server_config.d/
+│       └── jupyter_server_mcp.json  # Enables the server extension
 └── pyproject.toml         # Package configuration
 ```
 
